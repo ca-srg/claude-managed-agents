@@ -178,6 +178,9 @@ type PreparedToolResult = {
   isError: boolean;
   text: string;
 };
+type CompletedToolResult = PreparedToolResult & {
+  sessionThreadId?: string;
+};
 
 class SessionReconnectError extends Error {
   constructor(message: string) {
@@ -576,6 +579,7 @@ export async function runSession(
   /** Per-`event_id` recovery counter to bound the requires_action recover loop. */
   const toolRecoveryAttempts = new Map<string, number>();
   const processedEventIds = new Set<string>();
+  const completedToolResults = new Map<string, CompletedToolResult>();
   const startedAt = Date.now();
   const usage = createEmptySessionUsage();
 
@@ -626,30 +630,39 @@ export async function runSession(
     }
   }
 
-  async function sendToolResult(
+  function buildToolResultSendParams(
+    eventId: string,
     event: BetaManagedAgentsAgentCustomToolUseEvent,
-    payload: unknown,
-    forceError = false,
-  ): Promise<boolean> {
-    const preparedPayload = prepareToolResultPayload(payload, sessionLogger, event.id, event.name);
-    const isError = forceError || preparedPayload.isError;
-    const params: EventSendParams = {
+    completedResult: CompletedToolResult,
+  ): EventSendParams {
+    const sessionThreadId = completedResult.sessionThreadId ?? event.session_thread_id;
+
+    return {
       events: [
         {
-          content: [{ text: preparedPayload.text, type: "text" }],
-          custom_tool_use_id: event.id,
-          is_error: isError ? true : undefined,
+          content: [{ text: completedResult.text, type: "text" }],
+          custom_tool_use_id: eventId,
+          is_error: completedResult.isError ? true : undefined,
           // Echo the originating subagent thread id so a recovered result is
           // routed back to the correct thread (no-op for primary-thread tools).
-          ...(event.session_thread_id ? { session_thread_id: event.session_thread_id } : {}),
+          ...(sessionThreadId ? { session_thread_id: sessionThreadId } : {}),
           type: "user.custom_tool_result",
         },
       ],
     };
+  }
+
+  async function sendPreparedToolResult(
+    event: BetaManagedAgentsAgentCustomToolUseEvent,
+    completedResult: CompletedToolResult,
+    eventId = event.id,
+  ): Promise<boolean> {
+    const params = buildToolResultSendParams(eventId, event, completedResult);
+    toolResultSentSinceStreamStart = true;
 
     for (let attempt = 1; attempt <= TOOL_RESULT_SEND_MAX_ATTEMPTS; attempt += 1) {
       if (controller.signal.aborted) {
-        return isError;
+        return completedResult.isError;
       }
 
       const outcome = await raceWithTimeout(
@@ -660,13 +673,13 @@ export async function runSession(
 
       // Anything other than a timeout (success value or abort) ends the loop.
       if (outcome !== TIMED_OUT) {
-        return isError;
+        return completedResult.isError;
       }
 
       sessionLogger.warn(
         {
           attempt,
-          eventId: event.id,
+          eventId,
           maxAttempts: TOOL_RESULT_SEND_MAX_ATTEMPTS,
           timeoutMs: toolResultSendTimeoutMs,
           toolName: event.name,
@@ -679,7 +692,7 @@ export async function runSession(
         (await settleAbortAwareDelay(controller.signal, TOOL_RESULT_SEND_RETRY_DELAY_MS)) ===
           "aborted"
       ) {
-        return isError;
+        return completedResult.isError;
       }
     }
 
@@ -693,9 +706,45 @@ export async function runSession(
     throw new SessionReconnectError(`Failed to send custom tool result for ${event.name}`);
   }
 
+  async function sendToolResult(
+    event: BetaManagedAgentsAgentCustomToolUseEvent,
+    payload: unknown,
+    forceError = false,
+  ): Promise<boolean> {
+    const preparedPayload = prepareToolResultPayload(payload, sessionLogger, event.id, event.name);
+    const completedResult: CompletedToolResult = {
+      isError: forceError || preparedPayload.isError,
+      ...(event.session_thread_id ? { sessionThreadId: event.session_thread_id } : {}),
+      text: preparedPayload.text,
+    };
+    completedToolResults.set(event.id, completedResult);
+
+    return await sendPreparedToolResult(event, completedResult);
+  }
+
+  async function resendCompletedToolResult(
+    eventId: string,
+    event: BetaManagedAgentsAgentCustomToolUseEvent,
+  ): Promise<boolean> {
+    const completedResult = completedToolResults.get(eventId);
+    if (!completedResult) {
+      return false;
+    }
+
+    sessionLogger.warn(
+      { eventId, toolName: event.name },
+      "resending cached custom tool result without rerunning handler",
+    );
+    return await sendPreparedToolResult(event, completedResult, eventId);
+  }
+
   async function dispatchToolUse(event: BetaManagedAgentsAgentCustomToolUseEvent): Promise<void> {
+    if (completedToolResults.has(event.id)) {
+      await resendCompletedToolResult(event.id, event);
+      return;
+    }
+
     toolInvocations += 1;
-    toolResultSentSinceStreamStart = true;
 
     const handler = options.handlers[event.name];
     if (!handler) {
@@ -760,10 +809,10 @@ export async function runSession(
    * Resolve custom tool uses the session is blocked on after a
    * `requires_action` idle. For each blocked `event_id` that has no
    * `user.custom_tool_result` yet, the originating `agent.custom_tool_use` is
-   * re-dispatched (handler run + result send). This recovers the case where a
-   * tool use was missed by the live stream (reconnect race) or its earlier
-   * dispatch hung. Handlers are expected to be idempotent (e.g. `create_final_pr`
-   * updates an existing PR for the head branch). Bounded by
+   * resolved by resending a cached terminal result when the handler already
+   * completed, or re-dispatched only when no cached result exists. This recovers
+   * the case where a tool use was missed by the live stream (reconnect race) or
+   * its earlier dispatch hung. Bounded by
    * {@link MAX_TOOL_RECOVERY_ATTEMPTS} per event to avoid an infinite
    * recover→idle→recover loop.
    */
@@ -841,6 +890,14 @@ export async function runSession(
         { attempt: priorAttempts + 1, eventId, toolName: toolUse.name },
         "recovering pending custom tool result after requires_action idle",
       );
+
+      if (completedToolResults.has(eventId)) {
+        await resendCompletedToolResult(eventId, toolUse);
+        markProcessed(toolUse);
+        resolvedAny = true;
+        continue;
+      }
+
       await dispatchToolUse(toolUse);
       markProcessed(toolUse);
       resolvedAny = true;

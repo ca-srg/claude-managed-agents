@@ -15,7 +15,7 @@ type ScriptInstruction<TEvent> = TEvent | { error: Error; kind: "throw" } | { ki
 
 type FakeSessionScript = {
   listScripts?: Array<ReadonlyArray<ScriptInstruction<BetaManagedAgentsSessionEvent>>>;
-  onSend?: (params: EventSendParams, calls: FakeSessionCalls) => void;
+  onSend?: (params: EventSendParams, calls: FakeSessionCalls) => PromiseLike<unknown> | undefined;
   streamScripts: Array<ReadonlyArray<ScriptInstruction<BetaManagedAgentsStreamSessionEvents>>>;
 };
 
@@ -253,7 +253,10 @@ function createFakeSessionClient(script: FakeSessionScript): {
         events: {
           async send(_sessionId, params) {
             calls.sends.push(params);
-            script.onSend?.(params, calls);
+            const sendOutcome = script.onSend?.(params, calls);
+            if (sendOutcome) {
+              return await sendOutcome;
+            }
             return { ok: true };
           },
           list(_sessionId, params) {
@@ -649,6 +652,7 @@ describe("runSession", () => {
     const { calls, client } = createFakeSessionClient({
       onSend: () => {
         abortController.abort();
+        return undefined;
       },
       streamScripts: [
         [
@@ -887,6 +891,89 @@ describe("runSession", () => {
     expect(sessionResult.idleReached).toBe(true);
   });
 
+  test("replay resends a cached result after send timeouts without rerunning the handler", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-send-timeout", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[finalPrToolUse], [finalPrToolUse]],
+      onSend: () => new Promise<never>(() => {}),
+      streamScripts: [[createRunningEvent("evt-run-send-timeout"), finalPrToolUse]],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-send-timeout-cache-replay",
+      timeouts: {
+        maxWallClockMs: 10_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(9);
+    expect(calls.listCalls).toHaveLength(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.errored).toBe(true);
+  });
+
+  test("requires_action recovery resends an unresolved cached result and marks it processed", async () => {
+    let finalPrCalls = 0;
+    let sendCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent(
+      "evt-final-cached-recovery",
+      "create_final_pr",
+      {
+        title: "Ready",
+      },
+    );
+    const expectedOutput = { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[], [finalPrToolUse]],
+      onSend: () => {
+        sendCalls += 1;
+        if (sendCalls <= 3) {
+          return new Promise<never>(() => {});
+        }
+      },
+      streamScripts: [
+        [createRunningEvent("evt-run-cached-recovery"), finalPrToolUse],
+        [createRequiresActionIdleEvent("evt-idle-cached-recovery", [finalPrToolUse.id])],
+        [finalPrToolUse, createIdleEvent("evt-idle-cached-recovery-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return expectedOutput;
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-cached-recovery",
+      timeouts: {
+        maxWallClockMs: 5_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(4);
+    expect(parseFirstTextPayload(getRequiredSend(calls, 3))).toEqual(expectedOutput);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
   test("requires_action idle after an in-stream tool result reopens without redispatch", async () => {
     let finalPrCalls = 0;
     const finalPrToolUse = createCustomToolUseEvent("evt-final-current", "create_final_pr", {
@@ -1026,8 +1113,9 @@ describe("runSession", () => {
       timeouts: { maxWallClockMs: 2_000, streamReconnectDelayMs: 0 },
     });
 
-    // attempts 0 and 1 re-dispatch the handler; attempt 2 (>= MAX) sends a terminal error.
-    expect(handlerCalls).toBe(2);
+    // attempt 0 dispatches the handler; attempt 1 resends the cached result;
+    // attempt 2 (>= MAX) sends a terminal error without rerunning the handler.
+    expect(handlerCalls).toBe(1);
     const lastSend = calls.sends[calls.sends.length - 1];
     if (!lastSend) {
       throw new Error("Expected at least one send");

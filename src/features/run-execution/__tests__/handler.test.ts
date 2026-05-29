@@ -435,6 +435,92 @@ describe("runIssueOrchestration", () => {
     expect(harness.db.statuses.at(-1)).toEqual({ runId: "run-db-sync", status: "completed" });
   });
 
+  test("abort after create_final_pr success still persists the PR URL", async () => {
+    const toolAbortController = new AbortController();
+    const harness = createHarness({
+      handleCreateFinalPr: (async () => {
+        toolAbortController.abort();
+        return {
+          prNumber: 34,
+          prUrl: "https://github.com/owner/name/pull/34",
+          success: true,
+          updated: false,
+        };
+      }) as RunExecutionDeps["handleCreateFinalPr"],
+      runSession: (async (_client, options) => {
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          { signal: toolAbortController.signal },
+        );
+
+        return buildSessionResult({ sessionId: options.sessionId });
+      }) as RunExecutionDeps["runSession"],
+    });
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-final-pr-abort-after" },
+      harness.deps,
+    );
+
+    expect(toolAbortController.signal.aborted).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(result.prUrl).toBe("https://github.com/owner/name/pull/34");
+    expect(harness.db.runs.at(-1)?.prUrl).toBe("https://github.com/owner/name/pull/34");
+  });
+
+  test("abort after create_sub_issue success still syncs sub-issues to DB", async () => {
+    const toolAbortController = new AbortController();
+    const syncedSubIssue = { issueId: 802, issueNumber: 62, taskId: "task-abort-after" };
+    const harness = createHarness({
+      handleCreateSubIssue: (async (ctx) => {
+        ctx.runState.subIssues = [syncedSubIssue];
+        toolAbortController.abort();
+        return {
+          reused: false,
+          subIssueId: syncedSubIssue.issueId,
+          subIssueNumber: syncedSubIssue.issueNumber,
+          success: true,
+        };
+      }) as RunExecutionDeps["handleCreateSubIssue"],
+      runSession: (async (_client, options) => {
+        await options.handlers.create_sub_issue?.(
+          { body: "Sub task", title: "Sub task" },
+          { signal: toolAbortController.signal },
+        );
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
+
+        return buildSessionResult({ sessionId: options.sessionId });
+      }) as RunExecutionDeps["runSession"],
+    });
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-sub-issue-abort-after" },
+      harness.deps,
+    );
+
+    expect(toolAbortController.signal.aborted).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(harness.db.runs.some((run) => run.subIssues[0]?.taskId === "task-abort-after")).toBe(
+      true,
+    );
+    expect(harness.db.runs.at(-1)?.subIssues).toEqual([syncedSubIssue]);
+  });
+
   test("DB prompt loading forwards edited system prompts to agent registry", async () => {
     const promptCallOrder: string[] = [];
     let ensureAgentsInput: Parameters<RunExecutionDeps["ensureAgents"]>[1] | undefined;

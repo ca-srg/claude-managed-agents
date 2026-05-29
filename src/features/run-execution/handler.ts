@@ -1313,9 +1313,7 @@ export async function runIssueOrchestration(
         );
 
         if (finalPrOutcome.success) {
-          throwIfAborted(context.signal);
           runState = { ...(runState as RunState), prUrl: finalPrOutcome.prUrl };
-          throwIfAborted(context.signal);
           await writeAndSyncRunState();
         }
 
@@ -1354,7 +1352,6 @@ export async function runIssueOrchestration(
         );
 
         if ((runState as RunState).subIssues !== previousSubIssues) {
-          throwIfAborted(context.signal);
           await syncRunToDb();
         }
 

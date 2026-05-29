@@ -143,6 +143,7 @@ describe("github decomposition write", () => {
       title: `Task A [sub-issue:${expectedHash}]`,
     });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         { data: createdIssue, kind: "resolve" },
         { data: buildIssue(), kind: "resolve" },
@@ -208,9 +209,38 @@ describe("github decomposition write", () => {
     expect(octokit.requestCalls).toEqual([]);
   });
 
+  test("createSubIssue reuses a live matching sub-issue when the snapshot is stale", async () => {
+    const stableHash = titleHashFor(12, taskA);
+    const liveSubIssue = buildIssue({
+      id: 405,
+      number: 56,
+      title: `Task A [sub-issue:${stableHash}]`,
+    });
+    const octokit = createMockOctokit({ paginateOutcomes: [[liveSubIssue]] });
+
+    const creation = await createSubIssue(octokit, {
+      assignees: [],
+      existingSubIssues: [],
+      labels: [],
+      maxCap: 5,
+      owner: "acme",
+      parentId: 101,
+      parentN: 12,
+      repo: "widgets",
+      task: taskA,
+    });
+
+    expect(creation).toEqual({ issue: liveSubIssue, reused: true });
+    expect(octokit.paginateCalls).toEqual([
+      { body: undefined, method: "GET", url: "/repos/acme/widgets/issues/12/sub_issues" },
+    ]);
+    expect(octokit.requestCalls).toEqual([]);
+  });
+
   test("createSubIssue closes the orphan issue when linking fails and never DELETEs an issue endpoint", async () => {
     const createdIssue = buildIssue({ id: 700, number: 71, title: "Child issue" });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         { data: createdIssue, kind: "resolve" },
         { error: new Error("link failed"), kind: "reject" },
@@ -268,6 +298,7 @@ describe("github decomposition write", () => {
     const abortController = new AbortController();
     const createdIssue = buildIssue({ id: 701, number: 72, title: "Child issue" });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         {
           after: () => abortController.abort(),
@@ -306,14 +337,15 @@ describe("github decomposition write", () => {
   });
 
   test("createSubIssue enforces the configured max sub-issue cap", async () => {
-    const octokit = createMockOctokit();
+    const liveSubIssue = buildIssue({ id: 901, number: 92, title: "Already linked" });
+    const octokit = createMockOctokit({ paginateOutcomes: [[liveSubIssue]] });
 
     let thrownError: unknown;
 
     try {
       await createSubIssue(octokit, {
         assignees: [],
-        existingSubIssues: [buildIssue({ id: 901, number: 92, title: "Already linked" })],
+        existingSubIssues: [liveSubIssue],
         labels: [],
         maxCap: 1,
         owner: "acme",

@@ -145,7 +145,6 @@ export async function handleCreateSubIssue(
       signal: ctx.signal,
       task: subIssueTask,
     });
-    throwIfAborted(ctx.signal);
 
     const nextRunState: RunState = {
       ...ctx.runState,
@@ -157,9 +156,7 @@ export async function handleCreateSubIssue(
     };
     const persistRunState = ctx.writeRunState ?? defaultWriteRunState;
 
-    throwIfAborted(ctx.signal);
     await persistRunState(ctx.runState.runId, nextRunState);
-    throwIfAborted(ctx.signal);
     ctx.runState.subIssues = nextRunState.subIssues;
 
     return {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { Logger } from "pino";
 
+import { listSubIssues } from "@/shared/github/issues";
 import type { GitHubIssue, GitHubIssueClient } from "@/shared/github/types";
 import type { DecomposedTask } from "@/shared/types";
 
@@ -184,12 +185,20 @@ export async function createSubIssue(
     return { issue: existingSubIssue, reused: true };
   }
 
-  if (options.existingSubIssues.length >= options.maxCap) {
-    throw new SubIssueCapExceeded(
-      options.parentN,
-      options.maxCap,
-      options.existingSubIssues.length,
-    );
+  const liveSubIssues = await listSubIssues(
+    octokit,
+    options.owner,
+    options.repo,
+    options.parentN,
+    options.signal,
+  );
+  const liveSubIssue = findExistingSubIssue(options.parentN, options.task, liveSubIssues);
+  if (liveSubIssue) {
+    return { issue: liveSubIssue, reused: true };
+  }
+
+  if (liveSubIssues.length >= options.maxCap) {
+    throw new SubIssueCapExceeded(options.parentN, options.maxCap, liveSubIssues.length);
   }
 
   throwIfAborted(options.signal);

@@ -49,6 +49,7 @@ export async function listSubIssues(
   owner: string,
   repo: string,
   issueNumber: number,
+  signal?: AbortSignal,
 ): Promise<GitHubIssue[]> {
   const subIssuePage = await octokit.paginate(
     "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
@@ -56,6 +57,7 @@ export async function listSubIssues(
       issue_number: issueNumber,
       owner,
       per_page: 100,
+      ...(signal ? { request: { signal } } : {}),
       repo,
     },
   );
