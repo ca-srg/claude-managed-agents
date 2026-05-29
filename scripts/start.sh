@@ -24,12 +24,22 @@ echo "[start.sh] bun server started (pid=$APP_PID)" >&2
 # Remote MCP server through the MCP gateway below.
 MCP_PROXY_HOST="${MCP_PROXY_HOST:-0.0.0.0}"
 MCP_PROXY_PORT="${MCP_PROXY_PORT:-8096}"
-MCP_PROXY_CONFIG="${MCP_PROXY_CONFIG:-/etc/mcp-proxy/mcp-proxy.json}"
+MCP_PROXY_CONFIG="${MCP_PROXY_CONFIG:-/data/mcp-proxy.json}"
+MCP_PROXY_CONFIG_TEMPLATE="${MCP_PROXY_CONFIG_TEMPLATE:-/etc/mcp-proxy/mcp-proxy.json}"
 MCP_PROXY_ALLOW_ORIGIN="${MCP_PROXY_ALLOW_ORIGIN:-*}"
 
+# The image rootfs is ephemeral: anything outside the /data volume resets to
+# the baked-in image on every machine restart. Keep the runtime mcp-proxy
+# config on /data so SFTP-uploaded changes (see Makefile) survive restarts,
+# and seed it from the baked-in template the first time the volume is empty.
 if [ ! -f "$MCP_PROXY_CONFIG" ]; then
-  echo "[start.sh] mcp-proxy config not found at $MCP_PROXY_CONFIG" >&2
-  exit 1
+  if [ ! -f "$MCP_PROXY_CONFIG_TEMPLATE" ]; then
+    echo "[start.sh] mcp-proxy config missing at $MCP_PROXY_CONFIG and no template at $MCP_PROXY_CONFIG_TEMPLATE" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$MCP_PROXY_CONFIG")"
+  cp "$MCP_PROXY_CONFIG_TEMPLATE" "$MCP_PROXY_CONFIG"
+  echo "[start.sh] seeded $MCP_PROXY_CONFIG from $MCP_PROXY_CONFIG_TEMPLATE" >&2
 fi
 
 mcp-proxy \

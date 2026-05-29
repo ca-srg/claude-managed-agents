@@ -752,6 +752,83 @@ describe("runIssueOrchestration", () => {
     }
   });
 
+  test("configured vault updates existing env-backed MCP credentials with latest token", async () => {
+    const tokenEnvName = "RAGENT_FIGMA_MCP_TOKEN";
+    const previousToken = process.env[tokenEnvName];
+    process.env[tokenEnvName] = "figma-token-v2";
+    const mcpServer: McpServer = {
+      createdAt: "2026-04-23T00:00:00.000Z",
+      enabled: true,
+      id: 3,
+      isBuiltin: false,
+      name: "figma",
+      permissionPolicy: "always_allow",
+      tokenEnvName,
+      updatedAt: "2026-04-23T00:00:00.000Z",
+      url: "https://figma.example.com/mcp/",
+    };
+    const ensureMcpCredentialInputs: unknown[] = [];
+    const harness = createHarness({
+      ensureMcpCredentials: (async (_client, context) => {
+        harness.callLog.push("ensureMcpCredentials");
+        ensureMcpCredentialInputs.push(...context.servers);
+        return [
+          {
+            credentialId: "vcrd_existing_figma",
+            managedByUs: false,
+            mcpServerUrl: mcpServer.url,
+          },
+        ];
+      }) as RunExecutionDeps["ensureMcpCredentials"],
+      ensureVault: (async () => {
+        harness.callLog.push("ensureVault");
+        return {
+          managedByUs: false,
+          vaultId: "vault-configured",
+        };
+      }) as RunExecutionDeps["ensureVault"],
+    });
+    const db = harness.deps.db;
+    if (db === undefined) {
+      throw new Error("expected mock DB");
+    }
+    harness.deps.db = {
+      ...db,
+      listMcpServers: () => [mcpServer],
+    };
+
+    try {
+      const result = await runIssueOrchestration(
+        {
+          dryRun: false,
+          issue: 42,
+          repo: "owner/name",
+          runId: "run-configured-vault-env-token-update",
+          vaultId: "vault-configured",
+        },
+        harness.deps,
+      );
+
+      if (result.status !== "completed") {
+        throw new Error(result.errored?.message ?? `unexpected status ${result.status}`);
+      }
+      expect(ensureMcpCredentialInputs).toEqual([
+        {
+          mcpServerUrl: "https://figma.example.com/mcp/",
+          name: "figma",
+          token: "figma-token-v2",
+          updateExisting: true,
+        },
+      ]);
+    } finally {
+      if (typeof previousToken === "string") {
+        process.env[tokenEnvName] = previousToken;
+      } else {
+        delete process.env[tokenEnvName];
+      }
+    }
+  });
+
   test("configured vault can reuse a blank-env Linear MCP credential", async () => {
     const linearMcpServer: McpServer = {
       createdAt: "2026-04-23T00:00:00.000Z",

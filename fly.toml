@@ -21,6 +21,14 @@ primary_region = 'nrt'
 #   fly secrets set CLOUDFLARE_TUNNEL_TOKEN=<token-from-zero-trust-dashboard>
 #   fly secrets set MCP_GATEWAY_TOKEN=<random-token>
 #
+# Optional: join Cloudflare Zero Trust as a managed device (WARP, full-tunnel)
+# so outbound traffic can reach Access-protected resources (e.g. an mcp-proxy
+# upstream MCP server). start.sh brings WARP up before the other sidecars and
+# waits for Connected. Requires a "Service Auth" device-enrollment policy for
+# the token. See docs/deploy-fly.md. start.sh skips WARP when these are unset.
+#   fly secrets set CF_WARP_ORGANIZATION=<team-name> \
+#     CF_ACCESS_CLIENT_ID=<id>.access CF_ACCESS_CLIENT_SECRET=<secret>
+#
 # Public-hostname routing (e.g. app.example.com -> :3000,
 # mcp.example.com -> :8097) is configured in the Cloudflare Zero Trust
 # dashboard under Tunnels -> Public Hostnames.
@@ -30,7 +38,7 @@ primary_region = 'nrt'
   HOST = '127.0.0.1'
   LOG_LEVEL = 'info'
   MCP_PROXY_ALLOW_ORIGIN = '*'
-  MCP_PROXY_CONFIG = '/etc/mcp-proxy/mcp-proxy.json'
+  MCP_PROXY_CONFIG = '/data/mcp-proxy.json'
   MCP_PROXY_HOST = '127.0.0.1'
   MCP_PROXY_PORT = '8096'
   MCP_GATEWAY_HOST = '127.0.0.1'
@@ -51,6 +59,6 @@ primary_region = 'nrt'
   policy = 'always'
 
 [[vm]]
-  size = 'shared-cpu-2x'
-  memory = '2gb'
+  size = 'shared-cpu-1x'
+  memory = '1gb'
   cpus = 1

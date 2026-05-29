@@ -252,10 +252,11 @@ function resolveMcpCredentials(
       mcpServerUrl: server.url,
       name: server.name,
     };
-    if (typeof token === "string" && token.length > 0) {
+    const hasResolvedToken = typeof token === "string" && token.length > 0;
+    if (hasResolvedToken) {
       credential.token = token;
     }
-    if (shouldUseGitHubAppToken) {
+    if (shouldUseGitHubAppToken || hasResolvedToken) {
       credential.updateExisting = true;
     }
     resolved.push(credential);
