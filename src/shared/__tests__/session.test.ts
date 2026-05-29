@@ -925,6 +925,54 @@ describe("runSession", () => {
     expect(sessionResult.errored).toBe(true);
   });
 
+  test("replay skips cached resend when history already resolved a locally timed-out send", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent(
+      "evt-final-send-timeout-resolved",
+      "create_final_pr",
+      {
+        title: "Ready",
+      },
+    );
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [
+        [
+          finalPrToolUse,
+          createCustomToolResultEvent("evt-result-send-timeout-resolved", finalPrToolUse.id),
+        ],
+      ],
+      onSend: () => new Promise<never>(() => {}),
+      streamScripts: [
+        [createRunningEvent("evt-run-send-timeout-resolved"), finalPrToolUse],
+        [createIdleEvent("evt-idle-send-timeout-resolved")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-send-timeout-history-resolved",
+      timeouts: {
+        maxWallClockMs: 5_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(3);
+    expect(calls.listCalls).toHaveLength(1);
+    expect(calls.streamCalls).toBe(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+    expect(sessionResult.errored).toBe(false);
+  });
+
   test("requires_action recovery resends an unresolved cached result and marks it processed", async () => {
     let finalPrCalls = 0;
     let sendCalls = 0;

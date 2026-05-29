@@ -327,6 +327,10 @@ type RunSummaryRow = {
   status: string;
 };
 
+type RunStatusRow = {
+  status: string;
+};
+
 type RunEventRow = {
   id: string;
   runId: string;
@@ -624,6 +628,7 @@ type PreparedStatements = {
   getPromptRevisionsByKey: StatementLike<PromptRevisionRow, [PromptKey]>;
   getPromptRowByKey: StatementLike<PromptRow, [PromptKey]>;
   getRunById: StatementLike<RunRow, [string]>;
+  getRunStatus: StatementLike<RunStatusRow, [string]>;
   getRunsByRepo: StatementLike<RunRow, [string]>;
   insertRunEvent: StatementLike<unknown, [string, string, string, RunEventKind, string]>;
   getSessionIdsByRun: StatementLike<{ sessionId: string }, [string]>;
@@ -1262,6 +1267,11 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            origin_identifier AS originIdentifier,
            origin_url AS originUrl,
            origin_title AS originTitle
+         FROM runs
+         WHERE run_id = ?1`,
+      ),
+      getRunStatus: db.query<RunStatusRow, [string]>(
+        `SELECT status
          FROM runs
          WHERE run_id = ?1`,
       ),
@@ -2716,11 +2726,42 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     return row == null ? null : hydrateRun(row);
   }
 
+  function getRunStatus(runId: string): RunStatus | null {
+    const row = getRuntime().statements.getRunStatus.get(RUN_ID_SCHEMA.parse(runId));
+    return row == null ? null : RunStatusSchema.parse(row.status);
+  }
+
   function setRunStatus(runId: string, status: RunStatus): void {
     getRuntime().statements.setRunStatus.run(
       RunStatusSchema.parse(status),
       RUN_ID_SCHEMA.parse(runId),
     );
+  }
+
+  function setRunStatusIfCurrent(
+    runId: string,
+    next: RunStatus,
+    allowedCurrent: readonly RunStatus[],
+  ): boolean {
+    const parsedRunId = RUN_ID_SCHEMA.parse(runId);
+    const parsedNext = RunStatusSchema.parse(next);
+    const parsedAllowedCurrent = allowedCurrent.map((status) => RunStatusSchema.parse(status));
+    if (parsedAllowedCurrent.length === 0) {
+      return false;
+    }
+
+    getRuntime();
+    const allowedPlaceholders = parsedAllowedCurrent.map((_, index) => `?${index + 3}`).join(", ");
+    const result = db
+      .query<unknown, [RunStatus, string, ...RunStatus[]]>(
+        `UPDATE runs
+         SET status = ?1
+         WHERE run_id = ?2
+           AND status IN (${allowedPlaceholders})`,
+      )
+      .run(parsedNext, parsedRunId, ...parsedAllowedCurrent);
+
+    return readChanges(result) > 0;
   }
 
   function setRunPhase(runId: string, phase: RunPhase | null): void {
@@ -2753,9 +2794,31 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     return statements.listRuns.all(limit).map((row) => parseRunSummaryRow(row));
   }
 
-  function resyncOrphanedRuns(): { aborted: number } {
+  function resyncOrphanedRuns(opts: { excludeRunIds?: readonly string[] } = {}): {
+    aborted: number;
+  } {
+    const { statements } = getRuntime();
+    const excludeRunIds = Array.from(
+      new Set((opts.excludeRunIds ?? []).map((runId) => RUN_ID_SCHEMA.parse(runId))),
+    );
+    if (excludeRunIds.length > 0) {
+      const excludePlaceholders = excludeRunIds.map((_, index) => `?${index + 1}`).join(", ");
+      return {
+        aborted: readChanges(
+          db
+            .query<unknown, string[]>(
+              `UPDATE runs
+               SET status = 'aborted'
+               WHERE (status = 'running' OR status = 'queued')
+                 AND run_id NOT IN (${excludePlaceholders})`,
+            )
+            .run(...excludeRunIds),
+        ),
+      };
+    }
+
     return {
-      aborted: readChanges(getRuntime().statements.resyncOrphanedRuns.run()),
+      aborted: readChanges(statements.resyncOrphanedRuns.run()),
     };
   }
 
@@ -3833,6 +3896,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     getRepoPromptRevisions,
     getRepoUsageAggregate,
     getRunById,
+    getRunStatus,
     getRunsByRepo,
     getRunUsageAggregate,
     getSessionsByRun,
@@ -3878,6 +3942,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     setRepoEnvironmentAnthropicState,
     setRunPhase,
     setRunStatus,
+    setRunStatusIfCurrent,
     updateMcpServer,
   };
 }

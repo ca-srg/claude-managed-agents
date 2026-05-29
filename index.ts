@@ -334,18 +334,11 @@ cleanup.register(async () => {
   await staleRunReaper.stop();
 });
 
-// Recover stale Managed Agents requires_action sessions while their persisted
-// rows are still running; runQueue.start() resyncs remaining orphans afterward.
-try {
-  const startupReapSummary = await staleRunReaper.reapOnce();
-  if (startupReapSummary.staleRequiresAction > 0 || startupReapSummary.errors > 0) {
-    logger.info({ summary: startupReapSummary }, "stale run reaper startup recovery completed");
-  }
-} catch (err) {
-  logger.error({ err }, "stale run reaper startup recovery failed; continuing startup");
-}
-runQueue.start();
-staleRunReaper.start();
+// Snapshot running rows with persisted Managed Agents sessions before queue
+// orphan resync. These runs are excluded from queue aborts so the reaper can
+// attempt remote delete-first recovery after the HTTP server is already live.
+const startupCandidates = staleRunReaper.snapshotRunningCandidates();
+runQueue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 
 // The polled repositories list is now owned by the WebUI (`polled_repositories`
 // table). The poller is always started; if the table is empty the cycle is a
@@ -422,5 +415,9 @@ cleanup.register(async () => {
 });
 
 process.stdout.write(`Listening on http://${serverEnv.host}:${serverEnv.port}\n`);
+
+// Remote stale-session recovery can block on Managed Agents API calls; start it
+// only after Bun.serve has bound the port so dashboard/API startup stays fast.
+staleRunReaper.start({ startupCandidates });
 
 await shutdownPromise;

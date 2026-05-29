@@ -12,7 +12,7 @@ import type { createRunEventsModule } from "@/shared/run-events";
 
 type StaleRunReaperDb = Pick<
   ReturnType<typeof createDbModule>,
-  "getRunById" | "listRuns" | "setRunStatus"
+  "getRunById" | "getRunStatus" | "listRuns" | "setRunStatusIfCurrent"
 >;
 type StaleRunReaperRunEvents = Pick<ReturnType<typeof createRunEventsModule>, "emit">;
 
@@ -67,9 +67,17 @@ export type StaleRunReaperSummary = {
   staleRequiresAction: number;
 };
 
+export type StaleRunReaperCandidate = {
+  runId: string;
+  sessionIds: readonly string[];
+};
+
 export type StaleRunReaper = {
-  reapOnce(): Promise<StaleRunReaperSummary>;
-  start(): void;
+  reapOnce(opts?: {
+    candidates?: readonly StaleRunReaperCandidate[];
+  }): Promise<StaleRunReaperSummary>;
+  snapshotRunningCandidates(): StaleRunReaperCandidate[];
+  start(opts?: { startupCandidates?: readonly StaleRunReaperCandidate[] }): void;
   stop(): Promise<void>;
 };
 
@@ -88,7 +96,13 @@ export type StaleRunReaperDeps = {
 
 type SessionStatusEvent = Extract<
   BetaManagedAgentsSessionEvent,
-  { type: "session.status_idle" | "session.status_running" }
+  {
+    type:
+      | "session.status_idle"
+      | "session.status_rescheduled"
+      | "session.status_running"
+      | "session.status_terminated";
+  }
 >;
 
 type StaleRequiresActionSession = {
@@ -103,6 +117,17 @@ type StaleRequiresActionSession = {
 
 const STALE_REQUIRES_ACTION_ERROR_TYPE = "stale_requires_action";
 const REAPER_COMPONENT = "stale-run-reaper";
+const REAPER_REMOTE_CALL_TIMEOUT_MS = 30_000;
+const DELETE_SESSION_MAX_ATTEMPTS = 3;
+const DELETE_SESSION_RETRY_DELAY_MS = 250;
+
+type RemoteCallResult<T> =
+  | { ok: true; value: T }
+  | { error: unknown; ok: false; reason: "aborted" | "error" | "timeout" };
+
+type InterruptAndDeleteSessionResult =
+  | { ok: true }
+  | { error: unknown; ok: false; stage: "delete" | "interrupt" };
 
 function parseBooleanEnv(name: string, value: string | undefined): boolean | undefined {
   const rawValue = value?.trim().toLowerCase();
@@ -191,7 +216,12 @@ function processedAtString(event: BetaManagedAgentsSessionEvent): string | null 
 }
 
 function isSessionStatusEvent(event: BetaManagedAgentsSessionEvent): event is SessionStatusEvent {
-  return event.type === "session.status_idle" || event.type === "session.status_running";
+  return (
+    event.type === "session.status_idle" ||
+    event.type === "session.status_rescheduled" ||
+    event.type === "session.status_running" ||
+    event.type === "session.status_terminated"
+  );
 }
 
 function isAgentCustomToolUseEvent(
@@ -206,15 +236,113 @@ function isUserCustomToolResultEvent(
   return event.type === "user.custom_tool_result";
 }
 
+function remoteCallError(message: string): Error {
+  return new Error(message);
+}
+
+async function runRemoteCall<T>(input: {
+  context?: Record<string, unknown>;
+  logger: Logger | undefined;
+  operation: string;
+  promise: PromiseLike<T>;
+  signal: AbortSignal;
+  timeoutMs?: number;
+}): Promise<RemoteCallResult<T>> {
+  if (input.signal.aborted) {
+    return {
+      error: remoteCallError(`${input.operation} aborted`),
+      ok: false,
+      reason: "aborted",
+    };
+  }
+
+  const timeoutMs = input.timeoutMs ?? REAPER_REMOTE_CALL_TIMEOUT_MS;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve(input.promise).then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ error, ok: false as const, reason: "error" as const }),
+      ),
+      new Promise<RemoteCallResult<T>>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          resolve({
+            error: remoteCallError(`${input.operation} timed out after ${timeoutMs}ms`),
+            ok: false,
+            reason: "timeout",
+          });
+        }, timeoutMs);
+      }),
+      new Promise<RemoteCallResult<T>>((resolve) => {
+        abortListener = () => {
+          resolve({
+            error: remoteCallError(`${input.operation} aborted`),
+            ok: false,
+            reason: "aborted",
+          });
+        };
+        input.signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]);
+
+    if (!outcome.ok && outcome.reason === "timeout") {
+      input.logger?.warn(
+        { ...(input.context ?? {}), operation: input.operation, timeoutMs },
+        "stale run reaper remote call timed out",
+      );
+    }
+
+    return outcome;
+  } finally {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+    if (abortListener !== undefined) {
+      input.signal.removeEventListener("abort", abortListener);
+    }
+  }
+}
+
 async function readSessionEventsTail(
   client: StaleRunReaperSessionClient,
   sessionId: string,
   limit: number,
+  logger: Logger | undefined,
+  signal: AbortSignal,
 ): Promise<BetaManagedAgentsSessionEvent[]> {
   const events: BetaManagedAgentsSessionEvent[] = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { limit, order: "desc" })) {
-    events.push(event);
+  const iterator = client.beta.sessions.events
+    .list(sessionId, { limit, order: "desc" })
+    [Symbol.asyncIterator]();
+
+  try {
+    while (true) {
+      const nextResult = await runRemoteCall({
+        context: { sessionId },
+        logger,
+        operation: "sessions.events.list",
+        promise: iterator.next(),
+        signal,
+      });
+
+      if (!nextResult.ok) {
+        throw nextResult.error;
+      }
+
+      if (nextResult.value.done) {
+        break;
+      }
+
+      events.push(nextResult.value.value);
+    }
+  } finally {
+    if (iterator.return !== undefined) {
+      await iterator.return();
+    }
   }
+
   return events;
 }
 
@@ -308,90 +436,83 @@ function staleRequiresActionErrorPayload(input: {
   };
 }
 
-function buildStaleToolResultParams(input: {
-  runId: string;
-  staleSession: StaleRequiresActionSession;
-  toolUse: BetaManagedAgentsAgentCustomToolUseEvent;
-}): EventSendParams {
-  const payload = {
-    error: {
-      message:
-        "This custom tool request was stale in requires_action and the run was reaped by the server.",
-      runId: input.runId,
-      sessionId: input.staleSession.sessionId,
-      staleForMs: input.staleSession.staleForMs,
-      type: STALE_REQUIRES_ACTION_ERROR_TYPE,
-    },
-  };
-  const sessionThreadId = input.toolUse.session_thread_id;
-
-  return {
-    events: [
-      {
-        content: [{ text: JSON.stringify(payload), type: "text" }],
-        custom_tool_use_id: input.toolUse.id,
-        is_error: true,
-        ...(sessionThreadId ? { session_thread_id: sessionThreadId } : {}),
-        type: "user.custom_tool_result",
-      },
-    ],
-  };
-}
-
-async function sendStaleToolResults(input: {
-  client: StaleRunReaperSessionClient;
-  logger: Logger | undefined;
-  runId: string;
-  staleSession: StaleRequiresActionSession;
-}): Promise<void> {
-  for (const toolUse of input.staleSession.pendingToolUses) {
-    try {
-      await input.client.beta.sessions.events.send(
-        input.staleSession.sessionId,
-        buildStaleToolResultParams({
-          runId: input.runId,
-          staleSession: input.staleSession,
-          toolUse,
-        }),
-      );
-    } catch (err) {
-      input.logger?.warn(
-        { err, runId: input.runId, sessionId: input.staleSession.sessionId, toolUseId: toolUse.id },
-        "failed to send stale requires_action tool result",
-      );
-    }
-  }
-}
-
 async function interruptAndDeleteSession(input: {
   client: StaleRunReaperSessionClient;
   logger: Logger | undefined;
   runId: string;
   sessionId: string;
-}): Promise<void> {
-  try {
-    await input.client.beta.sessions.events.send(input.sessionId, {
+  signal: AbortSignal;
+  sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+}): Promise<InterruptAndDeleteSessionResult> {
+  const interruptResult = await runRemoteCall({
+    context: { runId: input.runId, sessionId: input.sessionId },
+    logger: input.logger,
+    operation: "sessions.events.send:user.interrupt",
+    promise: input.client.beta.sessions.events.send(input.sessionId, {
       events: [{ type: "user.interrupt" }],
-    });
-  } catch (err) {
+    }),
+    signal: input.signal,
+  });
+
+  if (!interruptResult.ok) {
+    if (interruptResult.reason === "aborted") {
+      return { error: interruptResult.error, ok: false, stage: "interrupt" };
+    }
     input.logger?.warn(
-      { err, runId: input.runId, sessionId: input.sessionId },
-      "failed to interrupt stale session before delete",
+      {
+        err: interruptResult.error,
+        reason: interruptResult.reason,
+        runId: input.runId,
+        sessionId: input.sessionId,
+      },
+      "failed to interrupt stale session before delete; continuing to delete",
     );
   }
 
-  try {
-    await input.client.beta.sessions.delete(input.sessionId);
-  } catch (err) {
+  let lastDeleteError: unknown = remoteCallError("stale session delete did not run");
+  for (let attempt = 1; attempt <= DELETE_SESSION_MAX_ATTEMPTS; attempt += 1) {
+    const deleteResult = await runRemoteCall({
+      context: { attempt, runId: input.runId, sessionId: input.sessionId },
+      logger: input.logger,
+      operation: "sessions.delete",
+      promise: input.client.beta.sessions.delete(input.sessionId),
+      signal: input.signal,
+    });
+
+    if (deleteResult.ok) {
+      return { ok: true };
+    }
+
+    lastDeleteError = deleteResult.error;
     input.logger?.warn(
-      { err, runId: input.runId, sessionId: input.sessionId },
+      {
+        attempt,
+        err: deleteResult.error,
+        maxAttempts: DELETE_SESSION_MAX_ATTEMPTS,
+        reason: deleteResult.reason,
+        runId: input.runId,
+        sessionId: input.sessionId,
+      },
       "failed to delete stale session",
     );
-  }
-}
 
-function isRunStillRunning(db: StaleRunReaperDb, runId: string, scanLimit: number): boolean {
-  return db.listRuns({ limit: scanLimit, status: "running" }).some((run) => run.runId === runId);
+    if (deleteResult.reason === "aborted") {
+      return { error: deleteResult.error, ok: false, stage: "delete" };
+    }
+
+    if (attempt < DELETE_SESSION_MAX_ATTEMPTS) {
+      await input.sleep(DELETE_SESSION_RETRY_DELAY_MS, input.signal);
+      if (input.signal.aborted) {
+        return {
+          error: remoteCallError("sessions.delete retry aborted"),
+          ok: false,
+          stage: "delete",
+        };
+      }
+    }
+  }
+
+  return { error: lastDeleteError, ok: false, stage: "delete" };
 }
 
 function safeEmit(
@@ -433,14 +554,22 @@ function terminalizeFailedRun(input: {
   deps: Pick<StaleRunReaperDeps, "logger" | "runEvents">;
   runId: string;
   staleSession: StaleRequiresActionSession;
-}): void {
+}): boolean {
   const errorPayload = staleRequiresActionErrorPayload({
     runId: input.runId,
     staleSession: input.staleSession,
     staleThresholdMs: input.config.requiresActionStaleMs,
   });
 
-  input.db.setRunStatus(input.runId, "failed");
+  const terminalized = input.db.setRunStatusIfCurrent(input.runId, "failed", ["running"]);
+  if (!terminalized) {
+    input.deps.logger?.warn(
+      { runId: input.runId, sessionId: input.staleSession.sessionId },
+      "stale run was no longer running after session delete; skipping terminal events",
+    );
+    return false;
+  }
+
   safeEmit(input.deps, input.runId, { kind: "error", payload: errorPayload });
   safeEmit(input.deps, input.runId, {
     kind: "phase",
@@ -456,6 +585,7 @@ function terminalizeFailedRun(input: {
       timedOut: false,
     },
   });
+  return true;
 }
 
 export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
@@ -466,9 +596,34 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
   let started = false;
   let abortController: AbortController | undefined;
   let loopPromise: Promise<void> | undefined;
+  let scanInFlight: Promise<StaleRunReaperSummary> | undefined;
+  const manualReapSignal = new AbortController().signal;
+
+  function currentSignal(): AbortSignal {
+    return abortController?.signal ?? manualReapSignal;
+  }
+
+  function snapshotRunningCandidates(): StaleRunReaperCandidate[] {
+    if (!config.enabled) {
+      return [];
+    }
+
+    const candidates: StaleRunReaperCandidate[] = [];
+    for (const runSummary of deps.db.listRuns({ limit: config.scanLimit, status: "running" })) {
+      const run = deps.db.getRunById(runSummary.runId);
+      if (run === null || run.sessionIds.length === 0) {
+        continue;
+      }
+
+      candidates.push({ runId: run.runId, sessionIds: [...run.sessionIds] });
+    }
+
+    return candidates;
+  }
 
   async function findStaleRequiresActionSession(
     sessionIds: readonly string[],
+    signal: AbortSignal,
   ): Promise<StaleRequiresActionSession | null> {
     const nowMs = now().getTime();
 
@@ -477,6 +632,8 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
         deps.anthropicClient,
         sessionId,
         config.sessionEventLimit,
+        deps.logger,
+        signal,
       );
       const staleSession = analyzeRequiresActionStaleness({
         events,
@@ -495,7 +652,8 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
   async function recoverStaleRun(
     runId: string,
     staleSession: StaleRequiresActionSession,
-  ): Promise<"cancelled" | "recovered" | "skipped"> {
+    signal: AbortSignal,
+  ): Promise<"cancelled" | "deferred" | "recovered" | "skipped"> {
     emitStaleRunDetected(deps, runId, staleSession);
 
     if (deps.cancelRun !== undefined) {
@@ -516,28 +674,36 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       }
     }
 
-    if (!isRunStillRunning(deps.db, runId, config.scanLimit)) {
+    if (deps.db.getRunStatus(runId) !== "running") {
       return "skipped";
     }
 
-    await sendStaleToolResults({
-      client: deps.anthropicClient,
-      logger: deps.logger,
-      runId,
-      staleSession,
-    });
-    await interruptAndDeleteSession({
+    const deleteResult = await interruptAndDeleteSession({
       client: deps.anthropicClient,
       logger: deps.logger,
       runId,
       sessionId: staleSession.sessionId,
+      signal,
+      sleep,
     });
+    if (!deleteResult.ok) {
+      deps.logger?.warn(
+        {
+          err: deleteResult.error,
+          runId,
+          sessionId: staleSession.sessionId,
+          stage: deleteResult.stage,
+          staleForMs: staleSession.staleForMs,
+        },
+        "stale session delete did not complete; deferring run terminalization",
+      );
+      return "deferred";
+    }
 
-    if (!isRunStillRunning(deps.db, runId, config.scanLimit)) {
+    if (!terminalizeFailedRun({ config, db: deps.db, deps, runId, staleSession })) {
       return "skipped";
     }
 
-    terminalizeFailedRun({ config, db: deps.db, deps, runId, staleSession });
     deps.logger?.warn(
       { runId, sessionId: staleSession.sessionId, staleForMs: staleSession.staleForMs },
       "recovered stale requires_action run",
@@ -545,7 +711,36 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
     return "recovered";
   }
 
-  async function reapOnce(): Promise<StaleRunReaperSummary> {
+  async function processCandidate(
+    candidate: StaleRunReaperCandidate,
+    summary: StaleRunReaperSummary,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (candidate.sessionIds.length === 0) {
+      summary.skipped += 1;
+      return;
+    }
+
+    const staleSession = await findStaleRequiresActionSession(candidate.sessionIds, signal);
+    if (staleSession === null) {
+      return;
+    }
+
+    summary.staleRequiresAction += 1;
+    const outcome = await recoverStaleRun(candidate.runId, staleSession, signal);
+    if (outcome === "cancelled") {
+      summary.cancelled += 1;
+    } else if (outcome === "recovered") {
+      summary.recovered += 1;
+    } else {
+      summary.skipped += 1;
+    }
+  }
+
+  async function runReapOnce(
+    opts: { candidates?: readonly StaleRunReaperCandidate[] },
+    signal: AbortSignal,
+  ): Promise<StaleRunReaperSummary> {
     const summary: StaleRunReaperSummary = {
       cancelled: 0,
       errors: 0,
@@ -555,6 +750,23 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       staleRequiresAction: 0,
     };
     if (!config.enabled) {
+      return summary;
+    }
+
+    if (opts.candidates !== undefined) {
+      summary.scanned = opts.candidates.length;
+      for (const candidate of opts.candidates) {
+        try {
+          await processCandidate(candidate, summary, signal);
+        } catch (err) {
+          summary.errors += 1;
+          deps.logger?.warn(
+            { err, runId: candidate.runId },
+            "stale requires_action run reaper failed for run",
+          );
+        }
+      }
+
       return summary;
     }
 
@@ -569,20 +781,7 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
           continue;
         }
 
-        const staleSession = await findStaleRequiresActionSession(run.sessionIds);
-        if (staleSession === null) {
-          continue;
-        }
-
-        summary.staleRequiresAction += 1;
-        const outcome = await recoverStaleRun(run.runId, staleSession);
-        if (outcome === "cancelled") {
-          summary.cancelled += 1;
-        } else if (outcome === "recovered") {
-          summary.recovered += 1;
-        } else {
-          summary.skipped += 1;
-        }
+        await processCandidate({ runId: run.runId, sessionIds: run.sessionIds }, summary, signal);
       } catch (err) {
         summary.errors += 1;
         deps.logger?.warn(
@@ -595,10 +794,39 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
     return summary;
   }
 
-  async function loop(signal: AbortSignal): Promise<void> {
+  function reapOnce(
+    opts: { candidates?: readonly StaleRunReaperCandidate[] } = {},
+  ): Promise<StaleRunReaperSummary> {
+    if (scanInFlight !== undefined) {
+      return scanInFlight;
+    }
+
+    const promise = runReapOnce(opts, currentSignal());
+    scanInFlight = promise;
+    const clearInFlight = () => {
+      if (scanInFlight === promise) {
+        scanInFlight = undefined;
+      }
+    };
+    void promise.then(clearInFlight, clearInFlight);
+    return promise;
+  }
+
+  async function loop(
+    signal: AbortSignal,
+    startupCandidates: readonly StaleRunReaperCandidate[],
+  ): Promise<void> {
+    let pendingStartupCandidates: readonly StaleRunReaperCandidate[] | undefined =
+      startupCandidates.length > 0 ? startupCandidates : undefined;
+
     while (started && !signal.aborted) {
       try {
-        const summary = await reapOnce();
+        const candidatesForCycle = pendingStartupCandidates;
+        pendingStartupCandidates = undefined;
+        const summary =
+          candidatesForCycle === undefined
+            ? await reapOnce()
+            : await reapOnce({ candidates: candidatesForCycle });
         if (summary.staleRequiresAction > 0 || summary.errors > 0) {
           deps.logger?.info({ summary }, "stale run reaper cycle completed");
         }
@@ -614,21 +842,25 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
     }
   }
 
-  function start(): void {
+  function start(opts: { startupCandidates?: readonly StaleRunReaperCandidate[] } = {}): void {
     if (started || !config.enabled) {
       return;
     }
 
+    const startupCandidates = (opts.startupCandidates ?? []).filter(
+      (candidate) => candidate.sessionIds.length > 0,
+    );
     started = true;
     abortController = new AbortController();
     deps.logger?.info(
       {
         intervalMs: config.intervalMs,
         requiresActionStaleMs: config.requiresActionStaleMs,
+        startupCandidateCount: startupCandidates.length,
       },
       "stale run reaper started",
     );
-    loopPromise = loop(abortController.signal).catch((err) => {
+    loopPromise = loop(abortController.signal, startupCandidates).catch((err) => {
       deps.logger?.error({ err }, "stale run reaper loop crashed");
     });
   }
@@ -644,11 +876,13 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       await loopPromise;
       loopPromise = undefined;
     }
+    abortController = undefined;
     deps.logger?.info("stale run reaper stopped");
   }
 
   return {
     reapOnce,
+    snapshotRunningCandidates,
     start,
     stop,
   };

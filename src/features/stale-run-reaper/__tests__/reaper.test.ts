@@ -23,6 +23,15 @@ type FakeClientCalls = {
   sends: Array<{ params: EventSendParams; sessionId: string }>;
 };
 
+type FakeClientOptions = {
+  onDelete?: (sessionId: string, calls: FakeClientCalls) => PromiseLike<unknown> | unknown;
+  onSend?: (
+    sessionId: string,
+    params: EventSendParams,
+    calls: FakeClientCalls,
+  ) => PromiseLike<unknown> | unknown;
+};
+
 const openDbs: DbModule[] = [];
 const RUN_ID = "run-stale-reaper";
 const SESSION_ID = "sess-stale-reaper";
@@ -116,7 +125,21 @@ function createRunningEvent(
   };
 }
 
-function createFakeClient(eventsBySession: Record<string, BetaManagedAgentsSessionEvent[]>): {
+function createTerminatedEvent(
+  id: string,
+  processedAt = OLD_PROCESSED_AT,
+): Extract<BetaManagedAgentsSessionEvent, { type: "session.status_terminated" }> {
+  return {
+    id,
+    processed_at: processedAt,
+    type: "session.status_terminated",
+  };
+}
+
+function createFakeClient(
+  eventsBySession: Record<string, BetaManagedAgentsSessionEvent[]>,
+  options: FakeClientOptions = {},
+): {
   calls: FakeClientCalls;
   client: Parameters<typeof createStaleRunReaper>[0]["anthropicClient"];
 } {
@@ -129,6 +152,10 @@ function createFakeClient(eventsBySession: Record<string, BetaManagedAgentsSessi
         sessions: {
           async delete(sessionId: string) {
             calls.deletes.push(sessionId);
+            const deleteOutcome = options.onDelete?.(sessionId, calls);
+            if (deleteOutcome !== undefined) {
+              return await deleteOutcome;
+            }
             return { id: sessionId, type: "session_deleted" };
           },
           events: {
@@ -144,6 +171,10 @@ function createFakeClient(eventsBySession: Record<string, BetaManagedAgentsSessi
             },
             async send(sessionId: string, params: EventSendParams) {
               calls.sends.push({ params, sessionId });
+              const sendOutcome = options.onSend?.(sessionId, params, calls);
+              if (sendOutcome !== undefined) {
+                return await sendOutcome;
+              }
               return { ok: true };
             },
           },
@@ -177,6 +208,7 @@ function createHarness(events: BetaManagedAgentsSessionEvent[]): {
       db,
       now: () => NOW,
       runEvents,
+      sleep: async () => undefined,
     }),
   };
 }
@@ -207,23 +239,65 @@ describe("createStaleRunReaper", () => {
     });
     expect(getDbStatus(db)).toBe("failed");
 
-    const toolResultSend = calls.sends.at(0);
-    expect(toolResultSend).toBeDefined();
-    if (toolResultSend === undefined) {
-      throw new Error("expected stale custom tool result send");
-    }
-    const toolResultEvent = toolResultSend.params.events.at(0);
-    expect(toolResultEvent).toMatchObject({
-      custom_tool_use_id: toolUse.id,
-      is_error: true,
-      type: "user.custom_tool_result",
-    });
-    expect(calls.sends.at(1)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(
+      calls.sends.some((send) =>
+        send.params.events.some((event) => event.type === "user.custom_tool_result"),
+      ),
+    ).toBe(false);
     expect(calls.deletes).toEqual([SESSION_ID]);
 
     const runEvents = db.listRunEvents({ limit: 20, runId: RUN_ID });
     expect(runEvents.map((event) => event.kind)).toContain("error");
     expect(runEvents.map((event) => event.kind)).toContain("complete");
+  });
+
+  test("defers recovery when stale session delete ultimately fails", async () => {
+    const db = createDbModule(":memory:");
+    openDbs.push(db);
+    const runEvents = createRunEventsModule({ db });
+    const toolUse = createCustomToolUseEvent("evt-tool-delete-fails");
+    const { calls, client } = createFakeClient(
+      {
+        [SESSION_ID]: [
+          createRequiresActionIdleEvent("evt-idle-delete-fails", [toolUse.id], OLD_PROCESSED_AT),
+          toolUse,
+        ],
+      },
+      {
+        onDelete: () => {
+          throw new Error("delete failed");
+        },
+      },
+    );
+    seedRunningRun(db);
+
+    const reaper = createStaleRunReaper({
+      anthropicClient: client,
+      config: { requiresActionStaleMs: 10 * 60 * 1_000 },
+      db,
+      now: () => NOW,
+      runEvents,
+      sleep: async () => undefined,
+    });
+
+    const summary = await reaper.reapOnce();
+
+    expect(summary).toMatchObject({ recovered: 0, skipped: 1, staleRequiresAction: 1 });
+    expect(getDbStatus(db)).toBe("running");
+    expect(calls.deletes).toEqual([SESSION_ID, SESSION_ID, SESSION_ID]);
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(
+      calls.sends.some((send) =>
+        send.params.events.some((event) => event.type === "user.custom_tool_result"),
+      ),
+    ).toBe(false);
+    const terminalEvents = db
+      .listRunEvents({ limit: 20, runId: RUN_ID })
+      .filter((event) => event.kind === "complete" || event.kind === "error");
+    expect(terminalEvents).toHaveLength(0);
   });
 
   test("leaves fresh requires_action runs alone", async () => {
@@ -271,6 +345,22 @@ describe("createStaleRunReaper", () => {
     expect(summary.staleRequiresAction).toBe(0);
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
+  });
+
+  test("ignores stale requires_action idle when a newer terminal status exists", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-terminal-latest");
+    const { calls, db, reaper } = createHarness([
+      createTerminatedEvent("evt-terminated-latest"),
+      createRequiresActionIdleEvent("evt-idle-terminal-old", [toolUse.id], OLD_PROCESSED_AT),
+      toolUse,
+    ]);
+
+    const summary = await reaper.reapOnce();
+
+    expect(summary.staleRequiresAction).toBe(0);
+    expect(getDbStatus(db)).toBe("running");
+    expect(calls.sends).toHaveLength(0);
+    expect(calls.deletes).toHaveLength(0);
   });
 
   test("delegates active stale runs to cancelRun before terminalizing", async () => {
@@ -340,7 +430,7 @@ describe("createStaleRunReaper", () => {
     expect(calls.deletes).toHaveLength(0);
   });
 
-  test("recovers stale startup runs before queue start resyncs remaining orphans", async () => {
+  test("recovers snapshot startup candidates while queue resync excludes them", async () => {
     const db = createDbModule(":memory:");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
@@ -381,15 +471,18 @@ describe("createStaleRunReaper", () => {
       runEvents,
     });
 
-    const summary = await reaper.reapOnce();
+    const startupCandidates = reaper.snapshotRunningCandidates();
+    expect(startupCandidates).toEqual([{ runId: RUN_ID, sessionIds: [SESSION_ID] }]);
 
-    expect(summary).toMatchObject({ recovered: 1, skipped: 1, staleRequiresAction: 1 });
+    const summary = await reaper.reapOnce({ candidates: startupCandidates });
+
+    expect(summary).toMatchObject({ recovered: 1, scanned: 1, skipped: 0, staleRequiresAction: 1 });
     expect(cancelResults).toEqual(["false:false"]);
     expect(getDbStatus(db, RUN_ID)).toBe("failed");
-    expect(calls.sends).toHaveLength(2);
+    expect(calls.sends).toHaveLength(1);
     expect(calls.deletes).toEqual([SESSION_ID]);
 
-    queue.start();
+    queue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 
     expect(getDbStatus(db, RUN_ID)).toBe("failed");
     expect(getDbStatus(db, "run-leftover-orphan")).toBe("aborted");

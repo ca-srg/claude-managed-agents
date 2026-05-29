@@ -63,6 +63,10 @@ export type StopOptions = {
   force?: boolean;
 };
 
+export type StartOptions = {
+  resyncExcludeRunIds?: readonly string[];
+};
+
 const DEFAULT_CANCEL_TIMEOUT_MS = 5_000;
 const STATUS_LOOKUP_LIMIT = 10_000;
 
@@ -327,13 +331,13 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
     return completed;
   }
 
-  function start(): void {
+  function start(opts: StartOptions = {}): void {
     if (started) {
       return;
     }
 
     if (!orphanResyncCompleted) {
-      deps.db.resyncOrphanedRuns();
+      deps.db.resyncOrphanedRuns({ excludeRunIds: opts.resyncExcludeRunIds ?? [] });
       // Callers may enqueue before first start; those in-memory jobs are not orphans.
       for (const job of queue) {
         deps.db.setRunStatus(job.runId, "queued");

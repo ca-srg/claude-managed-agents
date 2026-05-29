@@ -580,6 +580,7 @@ export async function runSession(
   const toolRecoveryAttempts = new Map<string, number>();
   const processedEventIds = new Set<string>();
   const completedToolResults = new Map<string, CompletedToolResult>();
+  const resolvedToolUseIds = new Set<string>();
   const startedAt = Date.now();
   const usage = createEmptySessionUsage();
 
@@ -619,6 +620,10 @@ export async function runSession(
   }, options.timeouts.maxWallClockMs);
 
   function markProcessed(event: SessionLoopEvent): void {
+    if (processedEventIds.has(event.id)) {
+      return;
+    }
+
     processedEventIds.add(event.id);
     lastEventId = event.id;
     eventsProcessed += 1;
@@ -671,8 +676,13 @@ export async function runSession(
         controller.signal,
       );
 
-      // Anything other than a timeout (success value or abort) ends the loop.
+      if (outcome === ABORTED_ITERATION) {
+        return completedResult.isError;
+      }
+
+      // Anything other than a timeout is a successful send.
       if (outcome !== TIMED_OUT) {
+        resolvedToolUseIds.add(eventId);
         return completedResult.isError;
       }
 
@@ -739,6 +749,11 @@ export async function runSession(
   }
 
   async function dispatchToolUse(event: BetaManagedAgentsAgentCustomToolUseEvent): Promise<void> {
+    if (resolvedToolUseIds.has(event.id)) {
+      markProcessed(event);
+      return;
+    }
+
     if (completedToolResults.has(event.id)) {
       await resendCompletedToolResult(event.id, event);
       return;
@@ -825,7 +840,7 @@ export async function runSession(
 
     const wanted = new Set(eventIds);
     const pendingToolUses = new Map<string, BetaManagedAgentsAgentCustomToolUseEvent>();
-    const resolvedToolUseIds = new Set<string>();
+    const historyResolvedToolUseIds = new Set<string>();
 
     const iterator = client.beta.sessions.events
       .list(options.sessionId, { order: "asc" })
@@ -844,6 +859,7 @@ export async function runSession(
         if (candidate.type === "agent.custom_tool_use" && wanted.has(candidate.id)) {
           pendingToolUses.set(candidate.id, candidate);
         } else if (candidate.type === "user.custom_tool_result") {
+          historyResolvedToolUseIds.add(candidate.custom_tool_use_id);
           resolvedToolUseIds.add(candidate.custom_tool_use_id);
         }
       }
@@ -857,7 +873,7 @@ export async function runSession(
         return "aborted";
       }
 
-      if (resolvedToolUseIds.has(eventId)) {
+      if (historyResolvedToolUseIds.has(eventId)) {
         // A result already exists for this tool use; nothing to recover.
         continue;
       }
@@ -965,6 +981,12 @@ export async function runSession(
 
     if (event.type === "agent.custom_tool_use") {
       await dispatchToolUse(event);
+      markProcessed(event);
+      return controller.signal.aborted ? "stop" : "continue";
+    }
+
+    if (event.type === "user.custom_tool_result") {
+      resolvedToolUseIds.add(event.custom_tool_use_id);
       markProcessed(event);
       return controller.signal.aborted ? "stop" : "continue";
     }
@@ -1181,11 +1203,50 @@ export async function runSession(
     }
   }
 
+  async function consumeReplayIterable(
+    iterable: AsyncIterable<SessionLoopEvent>,
+  ): Promise<"continue" | "stop"> {
+    const iterator = iterable[Symbol.asyncIterator]();
+    const replayedEvents: SessionLoopEvent[] = [];
+
+    try {
+      while (true) {
+        const nextResult = await nextFromIterator(iterator, controller.signal);
+        if (nextResult === ABORTED_ITERATION) {
+          return "stop";
+        }
+
+        if (nextResult.done) {
+          break;
+        }
+
+        replayedEvents.push(nextResult.value);
+      }
+    } finally {
+      await closeIterator(iterator);
+    }
+
+    for (const event of replayedEvents) {
+      if (event.type === "user.custom_tool_result") {
+        resolvedToolUseIds.add(event.custom_tool_use_id);
+      }
+    }
+
+    for (const event of replayedEvents) {
+      const processOutcome = await processEvent(event);
+      if (processOutcome === "stop") {
+        return "stop";
+      }
+    }
+
+    return "continue";
+  }
+
   try {
     while (!controller.signal.aborted && !idleReached && !errored) {
       try {
         if (reconnectNeedsReplay && lastEventId) {
-          const replayOutcome = await consumeIterable(
+          const replayOutcome = await consumeReplayIterable(
             client.beta.sessions.events.list(options.sessionId),
           );
           reconnectNeedsReplay = false;
