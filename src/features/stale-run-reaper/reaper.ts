@@ -67,6 +67,8 @@ export type StaleRunReaperSummary = {
   staleRequiresAction: number;
 };
 
+export type StaleRunReaperMode = "live" | "startup";
+
 export type StaleRunReaperCandidate = {
   runId: string;
   sessionIds: readonly string[];
@@ -75,6 +77,7 @@ export type StaleRunReaperCandidate = {
 export type StaleRunReaper = {
   reapOnce(opts?: {
     candidates?: readonly StaleRunReaperCandidate[];
+    mode?: StaleRunReaperMode;
   }): Promise<StaleRunReaperSummary>;
   snapshotRunningCandidates(): StaleRunReaperCandidate[];
   start(opts?: { startupCandidates?: readonly StaleRunReaperCandidate[] }): void;
@@ -238,6 +241,25 @@ function isUserCustomToolResultEvent(
 
 function remoteCallError(message: string): Error {
   return new Error(message);
+}
+
+function isAnthropicNotFoundError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") {
+    return false;
+  }
+
+  const status = (error as { status?: unknown }).status;
+  if (typeof status === "number" && status === 404) {
+    return true;
+  }
+
+  const name = (error as { name?: unknown }).name;
+  if (typeof name === "string" && name === "NotFoundError") {
+    return true;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && (code === "not_found" || code === "not_found_error");
 }
 
 async function runRemoteCall<T>(input: {
@@ -436,7 +458,7 @@ function staleRequiresActionErrorPayload(input: {
   };
 }
 
-async function interruptAndDeleteSession(input: {
+export async function interruptAndDeleteSession(input: {
   client: StaleRunReaperSessionClient;
   logger: Logger | undefined;
   runId: string;
@@ -455,18 +477,25 @@ async function interruptAndDeleteSession(input: {
   });
 
   if (!interruptResult.ok) {
-    if (interruptResult.reason === "aborted") {
-      return { error: interruptResult.error, ok: false, stage: "interrupt" };
+    if (isAnthropicNotFoundError(interruptResult.error)) {
+      input.logger?.debug(
+        { runId: input.runId, sessionId: input.sessionId },
+        "stale session not found during interrupt; continuing to delete",
+      );
+    } else {
+      if (interruptResult.reason === "aborted") {
+        return { error: interruptResult.error, ok: false, stage: "interrupt" };
+      }
+      input.logger?.warn(
+        {
+          err: interruptResult.error,
+          reason: interruptResult.reason,
+          runId: input.runId,
+          sessionId: input.sessionId,
+        },
+        "failed to interrupt stale session before delete; continuing to delete",
+      );
     }
-    input.logger?.warn(
-      {
-        err: interruptResult.error,
-        reason: interruptResult.reason,
-        runId: input.runId,
-        sessionId: input.sessionId,
-      },
-      "failed to interrupt stale session before delete; continuing to delete",
-    );
   }
 
   let lastDeleteError: unknown = remoteCallError("stale session delete did not run");
@@ -480,6 +509,14 @@ async function interruptAndDeleteSession(input: {
     });
 
     if (deleteResult.ok) {
+      return { ok: true };
+    }
+
+    if (isAnthropicNotFoundError(deleteResult.error)) {
+      input.logger?.debug(
+        { attempt, runId: input.runId, sessionId: input.sessionId },
+        "stale session already deleted",
+      );
       return { ok: true };
     }
 
@@ -585,6 +622,37 @@ function terminalizeFailedRun(input: {
       timedOut: false,
     },
   });
+  return true;
+}
+
+function terminalizeStartupOrphanRun(input: {
+  db: StaleRunReaperDb;
+  deps: Pick<StaleRunReaperDeps, "logger" | "runEvents">;
+  reason: string;
+  runId: string;
+}): boolean {
+  const terminalized = input.db.setRunStatusIfCurrent(input.runId, "aborted", ["running"]);
+  if (!terminalized) {
+    input.deps.logger?.warn(
+      { reason: input.reason, runId: input.runId },
+      "startup orphan run was no longer running; skipping abort events",
+    );
+    return false;
+  }
+
+  safeEmit(input.deps, input.runId, { kind: "phase", payload: { phase: "aborted" } });
+  safeEmit(input.deps, input.runId, {
+    kind: "complete",
+    payload: {
+      aborted: true,
+      status: "aborted",
+      timedOut: false,
+    },
+  });
+  input.deps.logger?.warn(
+    { reason: input.reason, runId: input.runId },
+    "aborted startup orphan run not recoverable as stale requires_action",
+  );
   return true;
 }
 
@@ -713,16 +781,55 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
 
   async function processCandidate(
     candidate: StaleRunReaperCandidate,
+    mode: StaleRunReaperMode,
     summary: StaleRunReaperSummary,
     signal: AbortSignal,
   ): Promise<void> {
     if (candidate.sessionIds.length === 0) {
+      if (mode === "startup") {
+        terminalizeStartupOrphanRun({
+          db: deps.db,
+          deps,
+          reason: "no_session_id",
+          runId: candidate.runId,
+        });
+      }
       summary.skipped += 1;
       return;
     }
 
-    const staleSession = await findStaleRequiresActionSession(candidate.sessionIds, signal);
+    let staleSession: StaleRequiresActionSession | null;
+    try {
+      staleSession = await findStaleRequiresActionSession(candidate.sessionIds, signal);
+    } catch (err) {
+      if (mode === "startup") {
+        deps.logger?.warn(
+          { err, runId: candidate.runId },
+          "failed to inspect startup candidate session events; aborting orphan run",
+        );
+        terminalizeStartupOrphanRun({
+          db: deps.db,
+          deps,
+          reason: "session_events_unavailable",
+          runId: candidate.runId,
+        });
+        summary.skipped += 1;
+        return;
+      }
+
+      throw err;
+    }
+
     if (staleSession === null) {
+      if (mode === "startup") {
+        terminalizeStartupOrphanRun({
+          db: deps.db,
+          deps,
+          reason: "not_stale_requires_action",
+          runId: candidate.runId,
+        });
+        summary.skipped += 1;
+      }
       return;
     }
 
@@ -738,7 +845,7 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
   }
 
   async function runReapOnce(
-    opts: { candidates?: readonly StaleRunReaperCandidate[] },
+    opts: { candidates?: readonly StaleRunReaperCandidate[]; mode?: StaleRunReaperMode },
     signal: AbortSignal,
   ): Promise<StaleRunReaperSummary> {
     const summary: StaleRunReaperSummary = {
@@ -753,11 +860,14 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       return summary;
     }
 
+    const mode: StaleRunReaperMode =
+      opts.mode ?? (opts.candidates === undefined ? "live" : "startup");
+
     if (opts.candidates !== undefined) {
       summary.scanned = opts.candidates.length;
       for (const candidate of opts.candidates) {
         try {
-          await processCandidate(candidate, summary, signal);
+          await processCandidate(candidate, mode, summary, signal);
         } catch (err) {
           summary.errors += 1;
           deps.logger?.warn(
@@ -781,7 +891,12 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
           continue;
         }
 
-        await processCandidate({ runId: run.runId, sessionIds: run.sessionIds }, summary, signal);
+        await processCandidate(
+          { runId: run.runId, sessionIds: run.sessionIds },
+          mode,
+          summary,
+          signal,
+        );
       } catch (err) {
         summary.errors += 1;
         deps.logger?.warn(
@@ -795,7 +910,7 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
   }
 
   function reapOnce(
-    opts: { candidates?: readonly StaleRunReaperCandidate[] } = {},
+    opts: { candidates?: readonly StaleRunReaperCandidate[]; mode?: StaleRunReaperMode } = {},
   ): Promise<StaleRunReaperSummary> {
     if (scanInFlight !== undefined) {
       return scanInFlight;
