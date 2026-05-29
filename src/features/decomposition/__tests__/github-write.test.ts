@@ -184,6 +184,38 @@ describe("github decomposition write", () => {
     });
   });
 
+  test("createSubIssue passes abort signals only to the read request", async () => {
+    const abortController = new AbortController();
+    const createdIssue = buildIssue({ id: 334, number: 45, title: "Child issue" });
+    const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
+      requestOutcomes: [
+        { data: createdIssue, kind: "resolve" },
+        { data: buildIssue(), kind: "resolve" },
+      ],
+    });
+
+    await createSubIssue(octokit, {
+      assignees: [],
+      existingSubIssues: [],
+      labels: [],
+      maxCap: 5,
+      owner: "acme",
+      parentId: 101,
+      parentN: 12,
+      repo: "widgets",
+      signal: abortController.signal,
+      task: taskA,
+    });
+
+    const readRequest = octokit.paginateCalls[0]?.body?.request as
+      | { signal?: AbortSignal }
+      | undefined;
+    expect(readRequest?.signal).toBe(abortController.signal);
+    expect(Object.hasOwn(octokit.requestCalls[0]?.body ?? {}, "request")).toBe(false);
+    expect(Object.hasOwn(octokit.requestCalls[1]?.body ?? {}, "request")).toBe(false);
+  });
+
   test("createSubIssue is idempotent when an existing sub-issue title contains the hash", async () => {
     const stableHash = titleHashFor(12, taskA);
     const existingSubIssue = buildIssue({

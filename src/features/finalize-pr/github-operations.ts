@@ -304,7 +304,6 @@ export async function createOrUpdatePR(
         body: prBody,
         owner: options.owner,
         pull_number: existingPR.number,
-        ...(options.signal ? { request: { signal: options.signal } } : {}),
         repo: options.repo,
         title: options.title,
       },
@@ -325,7 +324,6 @@ export async function createOrUpdatePR(
       draft: options.draft ?? false,
       head: options.head,
       owner: options.owner,
-      ...(options.signal ? { request: { signal: options.signal } } : {}),
       repo: options.repo,
       title: options.title,
     });

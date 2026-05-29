@@ -274,6 +274,9 @@ describe("createOrUpdatePR", () => {
       prUrl: "https://github.com/acme/widgets/pull/21",
       updated: true,
     });
+    const readRequest = mockOctokit.calls[0]?.body?.request as { signal?: AbortSignal } | undefined;
+    expect(readRequest?.signal).toBe(abortController.signal);
+    expect(Object.hasOwn(mockOctokit.calls[1]?.body ?? {}, "request")).toBe(false);
   });
 
   test("returns the create result when the signal aborts after the POST succeeds", async () => {
@@ -307,6 +310,15 @@ describe("createOrUpdatePR", () => {
       prUrl: "https://github.com/acme/widgets/pull/22",
       updated: false,
     });
+    const findReadRequest = mockOctokit.calls[0]?.body?.request as
+      | { signal?: AbortSignal }
+      | undefined;
+    const defaultBranchReadRequest = mockOctokit.calls[1]?.body?.request as
+      | { signal?: AbortSignal }
+      | undefined;
+    expect(findReadRequest?.signal).toBe(abortController.signal);
+    expect(defaultBranchReadRequest?.signal).toBe(abortController.signal);
+    expect(Object.hasOwn(mockOctokit.calls[2]?.body ?? {}, "request")).toBe(false);
   });
 
   test("defaults to draft=false (ready for review) when draft is omitted for new pull requests", async () => {

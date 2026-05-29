@@ -2600,7 +2600,6 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
       seedPromptIfMissingTransaction,
       statements,
     };
-    resyncOrphanedRuns();
     seedBuiltinMcpServersIfMissing(statements);
 
     return runtime;

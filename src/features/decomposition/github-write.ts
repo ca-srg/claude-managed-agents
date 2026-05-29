@@ -207,7 +207,6 @@ export async function createSubIssue(
     body: buildSubIssueBody(options.parentN, options.parentId, options.task),
     labels: options.labels,
     owner: options.owner,
-    ...(options.signal ? { request: { signal: options.signal } } : {}),
     repo: options.repo,
     title: buildSubIssueTitle(options.parentN, options.task),
   });
@@ -220,7 +219,6 @@ export async function createSubIssue(
     await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues", {
       issue_number: options.parentN,
       owner: options.owner,
-      ...(options.signal ? { request: { signal: options.signal } } : {}),
       repo: options.repo,
       sub_issue_id: createdIssue.id,
     });

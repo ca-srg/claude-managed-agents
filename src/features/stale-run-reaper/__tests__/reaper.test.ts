@@ -6,6 +6,7 @@ import type {
   EventSendParams,
 } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 
+import { createRunQueueModule } from "@/features/run-queue/handler";
 import {
   createStaleRunReaper,
   parseStaleRunReaperConfigFromEnv,
@@ -337,6 +338,61 @@ describe("createStaleRunReaper", () => {
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
     expect(calls.deletes).toHaveLength(0);
+  });
+
+  test("recovers stale startup runs before queue start resyncs remaining orphans", async () => {
+    const db = createDbModule(":memory:");
+    openDbs.push(db);
+    const runEvents = createRunEventsModule({ db });
+    const toolUse = createCustomToolUseEvent("evt-tool-startup");
+    const { calls, client } = createFakeClient({
+      [SESSION_ID]: [
+        createRequiresActionIdleEvent("evt-idle-startup", [toolUse.id], OLD_PROCESSED_AT),
+        toolUse,
+      ],
+    });
+    seedRunningRun(db);
+    db.insertRun(createRunState({ runId: "run-leftover-orphan" }));
+    db.setRunStatus("run-leftover-orphan", "running");
+    const queue = createRunQueueModule({
+      db,
+      executor: async () => {
+        throw new Error("startup recovery test should not execute queued jobs");
+      },
+      runEvents,
+    });
+    const cancelResults: string[] = [];
+    const reaper = createStaleRunReaper({
+      anthropicClient: client,
+      cancelRun: async (runId) => {
+        const wasActive = queue.getActiveRunId() === runId;
+        const cancelled = await queue.cancel(runId);
+        cancelResults.push(`${wasActive}:${cancelled}`);
+
+        if (cancelled) {
+          return "cancelled";
+        }
+
+        return wasActive ? "timed_out" : "not_active";
+      },
+      config: { requiresActionStaleMs: 10 * 60 * 1_000 },
+      db,
+      now: () => NOW,
+      runEvents,
+    });
+
+    const summary = await reaper.reapOnce();
+
+    expect(summary).toMatchObject({ recovered: 1, skipped: 1, staleRequiresAction: 1 });
+    expect(cancelResults).toEqual(["false:false"]);
+    expect(getDbStatus(db, RUN_ID)).toBe("failed");
+    expect(calls.sends).toHaveLength(2);
+    expect(calls.deletes).toEqual([SESSION_ID]);
+
+    queue.start();
+
+    expect(getDbStatus(db, RUN_ID)).toBe("failed");
+    expect(getDbStatus(db, "run-leftover-orphan")).toBe("aborted");
   });
 
   test("ignores terminal idle sessions", async () => {

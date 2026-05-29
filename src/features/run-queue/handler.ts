@@ -166,11 +166,10 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
   const queue: QueuedJob[] = [];
   let busy = false;
   let currentJob: RunningJob | undefined;
+  let orphanResyncCompleted = false;
   let started = false;
   let stopping = false;
   let workerPromise: Promise<void> | undefined;
-
-  deps.db.resyncOrphanedRuns();
 
   function emitPhase(runId: string, phase: QueuePhase): void {
     deps.runEvents.emit(runId, { kind: "phase", payload: { phase } });
@@ -331,6 +330,15 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
   function start(): void {
     if (started) {
       return;
+    }
+
+    if (!orphanResyncCompleted) {
+      deps.db.resyncOrphanedRuns();
+      // Callers may enqueue before first start; those in-memory jobs are not orphans.
+      for (const job of queue) {
+        deps.db.setRunStatus(job.runId, "queued");
+      }
+      orphanResyncCompleted = true;
     }
 
     started = true;

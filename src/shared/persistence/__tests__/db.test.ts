@@ -561,7 +561,7 @@ describe("createDbModule pid migration", () => {
     }
   });
 
-  test("initDb resyncs running and queued rows as aborted", () => {
+  test("initDb preserves active rows and explicit resync aborts them", () => {
     const sharedDb = new Database(":memory:");
 
     sharedDb.exec(`
@@ -666,7 +666,7 @@ describe("createDbModule pid migration", () => {
     dbModule.initDb();
 
     try {
-      const statuses = sharedDb
+      const statusesAfterInit = sharedDb
         .query<{ runId: string; status: string }>(
           `SELECT run_id AS runId, status
            FROM runs
@@ -674,7 +674,23 @@ describe("createDbModule pid migration", () => {
         )
         .all();
 
-      expect(statuses).toEqual([
+      expect(statusesAfterInit).toEqual([
+        { runId: "completed-run", status: "completed" },
+        { runId: "queued-run", status: "queued" },
+        { runId: "running-run", status: "running" },
+      ]);
+
+      expect(dbModule.resyncOrphanedRuns()).toEqual({ aborted: 2 });
+
+      const statusesAfterResync = sharedDb
+        .query<{ runId: string; status: string }>(
+          `SELECT run_id AS runId, status
+           FROM runs
+           ORDER BY run_id ASC`,
+        )
+        .all();
+
+      expect(statusesAfterResync).toEqual([
         { runId: "completed-run", status: "completed" },
         { runId: "queued-run", status: "aborted" },
         { runId: "running-run", status: "aborted" },
