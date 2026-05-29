@@ -302,6 +302,10 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
     return run?.status ?? null;
   }
 
+  function getActiveRunId(): string | null {
+    return currentJob?.runId ?? null;
+  }
+
   async function cancel(runId: string): Promise<boolean> {
     const queueIndex = queue.findIndex((job) => job.runId === runId);
     if (queueIndex >= 0) {
@@ -358,6 +362,7 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
   return {
     cancel,
     enqueue,
+    getActiveRunId,
     getStatus,
     start,
     stop,

@@ -26,6 +26,10 @@ import {
   type RunExecutionInput as QueuedRunExecutionInput,
   type RunExecutionResult as QueuedRunExecutionResult,
 } from "@/features/run-queue/handler";
+import {
+  createStaleRunReaper,
+  parseStaleRunReaperConfigFromEnv,
+} from "@/features/stale-run-reaper/reaper";
 import { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
 import { buildChildPrompt } from "@/shared/agents/prompts/child";
 import { buildParentPrompt } from "@/shared/agents/prompts/parent";
@@ -362,6 +366,28 @@ cleanup.register(async () => {
   await runQueue.stop({ force: false });
 });
 runQueue.start();
+
+const staleRunReaperConfig = parseStaleRunReaperConfigFromEnv(process.env);
+const staleRunReaper = createStaleRunReaper({
+  anthropicClient,
+  cancelRun: async (runId) => {
+    const wasActive = runQueue.getActiveRunId() === runId;
+    const cancelled = await runQueue.cancel(runId);
+    if (cancelled) {
+      return "cancelled";
+    }
+
+    return wasActive ? "timed_out" : "not_active";
+  },
+  config: staleRunReaperConfig,
+  db,
+  logger,
+  runEvents,
+});
+staleRunReaper.start();
+cleanup.register(async () => {
+  await staleRunReaper.stop();
+});
 
 // The polled repositories list is now owned by the WebUI (`polled_repositories`
 // table). The poller is always started; if the table is empty the cycle is a

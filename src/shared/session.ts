@@ -57,6 +57,19 @@ export type SessionTimeouts = {
   idleGraceMs?: number;
   maxWallClockMs: number;
   streamReconnectDelayMs?: number;
+  /**
+   * Per-invocation wall-clock cap for a custom tool handler. When exceeded the
+   * loop sends a structured error `user.custom_tool_result` instead of blocking
+   * forever, so a hung handler (e.g. a stuck `create_final_pr`) cannot strand
+   * the session in `requires_action`. Defaults to {@link DEFAULT_TOOL_HANDLER_TIMEOUT_MS}.
+   */
+  toolHandlerTimeoutMs?: number;
+  /**
+   * Wall-clock cap for a single `events.send` of a tool result. Sends are
+   * retried up to {@link TOOL_RESULT_SEND_MAX_ATTEMPTS} times on timeout.
+   * Defaults to {@link DEFAULT_TOOL_RESULT_SEND_TIMEOUT_MS}.
+   */
+  toolResultSendTimeoutMs?: number;
 };
 
 /**
@@ -142,10 +155,22 @@ export type RunSessionOptions = {
 };
 
 const ABORTED_ITERATION = Symbol("ABORTED_ITERATION");
+const TIMED_OUT = Symbol("TIMED_OUT");
 const MAX_CUSTOM_TOOL_RESULT_BYTES = 64 * 1024;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const PREVIEW_CHAR_LIMIT = 2_048;
 const STREAM_RECONNECT_DELAY_MS = 500;
+const DEFAULT_TOOL_HANDLER_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TOOL_RESULT_SEND_TIMEOUT_MS = 30 * 1000;
+const TOOL_RESULT_SEND_MAX_ATTEMPTS = 3;
+const TOOL_RESULT_SEND_RETRY_DELAY_MS = 500;
+/**
+ * How many times a single pending `agent.custom_tool_use` may be re-dispatched
+ * from a `requires_action` idle before the loop gives up and sends a terminal
+ * error result. Guards against an infinite recover→idle→recover loop when a
+ * handler keeps failing or the result send keeps being rejected.
+ */
+const MAX_TOOL_RECOVERY_ATTEMPTS = 2;
 
 type SessionLoopEvent = BetaManagedAgentsSessionEvent | BetaManagedAgentsStreamSessionEvents;
 type PreparedToolResult = {
@@ -300,6 +325,28 @@ function buildUnknownToolPayload(toolName: string) {
   };
 }
 
+function buildHandlerTimeoutPayload(toolName: string, timeoutMs: number) {
+  return {
+    error: {
+      message: `Custom tool "${toolName}" timed out after ${timeoutMs}ms`,
+      timeoutMs,
+      type: "handler_timeout",
+    },
+    success: false,
+  };
+}
+
+function buildToolRecoveryExhaustedPayload(toolName: string, attempts: number) {
+  return {
+    error: {
+      attempts,
+      message: `Custom tool "${toolName}" could not be resolved after ${attempts} recovery attempt(s)`,
+      type: "tool_recovery_exhausted",
+    },
+    success: false,
+  };
+}
+
 function prepareToolResultPayload(
   payload: unknown,
   logger: Logger,
@@ -446,6 +493,54 @@ async function promiseWithAbort<TValue>(
   }
 }
 
+/**
+ * Race a promise against a timeout and an abort signal. Returns the resolved
+ * value, {@link TIMED_OUT} if the deadline elapses first, or
+ * {@link ABORTED_ITERATION} if the signal aborts first. A non-positive timeout
+ * degrades to {@link promiseWithAbort} (abort-aware, no deadline).
+ *
+ * Note: the underlying promise is not cancelled on timeout/abort — callers must
+ * ensure abandoning it is safe (custom tool handlers may keep running in the
+ * background, which is acceptable since the loop no longer awaits them).
+ */
+async function raceWithTimeout<TValue>(
+  promiseLike: PromiseLike<TValue>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<TValue | typeof TIMED_OUT | typeof ABORTED_ITERATION> {
+  if (signal.aborted) {
+    return ABORTED_ITERATION;
+  }
+
+  if (timeoutMs <= 0) {
+    return promiseWithAbort(promiseLike, signal);
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+
+  try {
+    return await Promise.race([
+      Promise.resolve(promiseLike),
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+      }),
+      new Promise<typeof ABORTED_ITERATION>((resolve) => {
+        abortListener = () => resolve(ABORTED_ITERATION);
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (abortListener) {
+      signal.removeEventListener("abort", abortListener);
+    }
+  }
+}
+
 export async function runSession(
   client: SessionClient,
   options: RunSessionOptions,
@@ -457,6 +552,16 @@ export async function runSession(
     0,
     options.timeouts.streamReconnectDelayMs ?? STREAM_RECONNECT_DELAY_MS,
   );
+  const toolHandlerTimeoutMs = Math.max(
+    0,
+    options.timeouts.toolHandlerTimeoutMs ?? DEFAULT_TOOL_HANDLER_TIMEOUT_MS,
+  );
+  const toolResultSendTimeoutMs = Math.max(
+    0,
+    options.timeouts.toolResultSendTimeoutMs ?? DEFAULT_TOOL_RESULT_SEND_TIMEOUT_MS,
+  );
+  /** Per-`event_id` recovery counter to bound the requires_action recover loop. */
+  const toolRecoveryAttempts = new Map<string, number>();
   const processedEventIds = new Set<string>();
   const startedAt = Date.now();
   const usage = createEmptySessionUsage();
@@ -521,13 +626,58 @@ export async function runSession(
           content: [{ text: preparedPayload.text, type: "text" }],
           custom_tool_use_id: event.id,
           is_error: isError ? true : undefined,
+          // Echo the originating subagent thread id so a recovered result is
+          // routed back to the correct thread (no-op for primary-thread tools).
+          ...(event.session_thread_id ? { session_thread_id: event.session_thread_id } : {}),
           type: "user.custom_tool_result",
         },
       ],
     };
 
-    await client.beta.sessions.events.send(options.sessionId, params);
-    return isError;
+    for (let attempt = 1; attempt <= TOOL_RESULT_SEND_MAX_ATTEMPTS; attempt += 1) {
+      if (controller.signal.aborted) {
+        return isError;
+      }
+
+      const outcome = await raceWithTimeout(
+        client.beta.sessions.events.send(options.sessionId, params),
+        toolResultSendTimeoutMs,
+        controller.signal,
+      );
+
+      // Anything other than a timeout (success value or abort) ends the loop.
+      if (outcome !== TIMED_OUT) {
+        return isError;
+      }
+
+      sessionLogger.warn(
+        {
+          attempt,
+          eventId: event.id,
+          maxAttempts: TOOL_RESULT_SEND_MAX_ATTEMPTS,
+          timeoutMs: toolResultSendTimeoutMs,
+          toolName: event.name,
+        },
+        "tool result send timed out; retrying",
+      );
+
+      if (
+        attempt < TOOL_RESULT_SEND_MAX_ATTEMPTS &&
+        (await settleAbortAwareDelay(controller.signal, TOOL_RESULT_SEND_RETRY_DELAY_MS)) ===
+          "aborted"
+      ) {
+        return isError;
+      }
+    }
+
+    // Exhausted retries: surface as a reconnect so the requires_action idle path
+    // can re-attempt recovery (bounded by MAX_TOOL_RECOVERY_ATTEMPTS) instead of
+    // silently stranding the session.
+    sessionLogger.error(
+      { eventId: event.id, toolName: event.name },
+      "tool result send failed after retries; forcing reconnect",
+    );
+    throw new SessionReconnectError(`Failed to send custom tool result for ${event.name}`);
   }
 
   async function dispatchToolUse(event: BetaManagedAgentsAgentCustomToolUseEvent): Promise<void> {
@@ -541,12 +691,34 @@ export async function runSession(
       return;
     }
 
+    let handlerOutput: unknown;
     try {
-      const handlerOutput = await handler(event.input);
-      const sendWasError = await sendToolResult(event, handlerOutput);
-      if (sendWasError) {
-        toolErrors += 1;
+      const outcome = await raceWithTimeout(
+        handler(event.input),
+        toolHandlerTimeoutMs,
+        controller.signal,
+      );
+
+      if (outcome === ABORTED_ITERATION) {
+        // Session is aborting; cleanup will interrupt/delete. Skip the send.
+        return;
       }
+
+      if (outcome === TIMED_OUT) {
+        toolErrors += 1;
+        sessionLogger.error(
+          { eventId: event.id, timeoutMs: toolHandlerTimeoutMs, toolName: event.name },
+          "custom tool handler timed out; sending error result",
+        );
+        await sendToolResult(
+          event,
+          buildHandlerTimeoutPayload(event.name, toolHandlerTimeoutMs),
+          true,
+        );
+        return;
+      }
+
+      handlerOutput = outcome;
     } catch (error) {
       toolErrors += 1;
       sessionLogger.error(
@@ -554,7 +726,106 @@ export async function runSession(
         "handler failed",
       );
       await sendToolResult(event, buildHandlerErrorPayload(error), true);
+      return;
     }
+
+    // Sent outside the try so a send failure surfaces as a reconnect (handled by
+    // sendToolResult) rather than being swallowed and re-sent as a handler error.
+    const sendWasError = await sendToolResult(event, handlerOutput);
+    if (sendWasError) {
+      toolErrors += 1;
+    }
+  }
+
+  /**
+   * Resolve custom tool uses the session is blocked on after a
+   * `requires_action` idle. For each blocked `event_id` that has no
+   * `user.custom_tool_result` yet, the originating `agent.custom_tool_use` is
+   * re-dispatched (handler run + result send). This recovers the case where a
+   * tool use was missed by the live stream (reconnect race) or its earlier
+   * dispatch hung. Handlers are expected to be idempotent (e.g. `create_final_pr`
+   * updates an existing PR for the head branch). Bounded by
+   * {@link MAX_TOOL_RECOVERY_ATTEMPTS} per event to avoid an infinite
+   * recover→idle→recover loop.
+   */
+  async function recoverPendingToolUses(
+    eventIds: ReadonlyArray<string>,
+  ): Promise<"resolved" | "none" | "aborted"> {
+    if (eventIds.length === 0) {
+      return "none";
+    }
+
+    const wanted = new Set(eventIds);
+    const pendingToolUses = new Map<string, BetaManagedAgentsAgentCustomToolUseEvent>();
+    const resolvedToolUseIds = new Set<string>();
+
+    const iterator = client.beta.sessions.events
+      .list(options.sessionId, { order: "asc" })
+      [Symbol.asyncIterator]();
+    try {
+      while (true) {
+        const next = await nextFromIterator(iterator, controller.signal);
+        if (next === ABORTED_ITERATION) {
+          return "aborted";
+        }
+        if (next.done) {
+          break;
+        }
+
+        const candidate = next.value;
+        if (candidate.type === "agent.custom_tool_use" && wanted.has(candidate.id)) {
+          pendingToolUses.set(candidate.id, candidate);
+        } else if (candidate.type === "user.custom_tool_result") {
+          resolvedToolUseIds.add(candidate.custom_tool_use_id);
+        }
+      }
+    } finally {
+      await closeIterator(iterator);
+    }
+
+    let resolvedAny = false;
+    for (const eventId of eventIds) {
+      if (controller.signal.aborted) {
+        return "aborted";
+      }
+
+      if (resolvedToolUseIds.has(eventId)) {
+        // A result already exists for this tool use; nothing to recover.
+        continue;
+      }
+
+      const toolUse = pendingToolUses.get(eventId);
+      if (!toolUse) {
+        // Blocked on something we cannot resolve here (e.g. a tool confirmation).
+        continue;
+      }
+
+      const priorAttempts = toolRecoveryAttempts.get(eventId) ?? 0;
+      if (priorAttempts >= MAX_TOOL_RECOVERY_ATTEMPTS) {
+        toolRecoveryAttempts.set(eventId, priorAttempts + 1);
+        sessionLogger.error(
+          { attempts: priorAttempts, eventId, toolName: toolUse.name },
+          "pending custom tool recovery exhausted; sending terminal error result",
+        );
+        await sendToolResult(
+          toolUse,
+          buildToolRecoveryExhaustedPayload(toolUse.name, priorAttempts),
+          true,
+        );
+        resolvedAny = true;
+        continue;
+      }
+
+      toolRecoveryAttempts.set(eventId, priorAttempts + 1);
+      sessionLogger.warn(
+        { attempt: priorAttempts + 1, eventId, toolName: toolUse.name },
+        "recovering pending custom tool result after requires_action idle",
+      );
+      await dispatchToolUse(toolUse);
+      resolvedAny = true;
+    }
+
+    return resolvedAny ? "resolved" : "none";
   }
 
   async function processEvent(event: SessionLoopEvent): Promise<"continue" | "stop"> {
@@ -566,6 +837,33 @@ export async function runSession(
 
     if (event.type === "session.error") {
       markProcessed(event);
+
+      const sessionError = event.error;
+      // MCP connection/auth failures are NOT recoverable by reconnecting the
+      // event stream — they originate in the MCP layer, frequently from an
+      // optional/supplementary server (wiki, design tool, etc.) that is
+      // misconfigured or transiently down. Treating them as fatal here tore
+      // down otherwise-healthy sessions (e.g. a placeholder MCP URL returning
+      // 502 racing a `create_final_pr`, stranding the run). Log and continue so
+      // the agent can adapt: retry the tool, fall back, or surface the failure
+      // in its own result. Required-server failures still surface to the agent
+      // as failing tool calls, which it handles far better than a teardown.
+      if (
+        sessionError.type === "mcp_connection_failed_error" ||
+        sessionError.type === "mcp_authentication_failed_error"
+      ) {
+        sessionLogger.warn(
+          {
+            errorType: sessionError.type,
+            eventId: event.id,
+            mcpServerName: sessionError.mcp_server_name,
+            retryStatus: sessionError.retry_status.type,
+          },
+          "non-fatal MCP error; continuing session without reconnect",
+        );
+        return controller.signal.aborted ? "stop" : "continue";
+      }
+
       sessionLogger.error({ err: event.error, eventId: event.id }, "session error event received");
       throw new SessionReconnectError(event.error.message);
     }
@@ -730,6 +1028,25 @@ export async function runSession(
 
     if (event.type === "session.status_idle") {
       markProcessed(event);
+
+      // The session is blocking on one or more client-input events (typically a
+      // custom tool result). Resolve any we missed/hung on before treating idle
+      // as terminal — otherwise a single dropped result strands the run.
+      if (event.stop_reason.type === "requires_action") {
+        const recovery = await recoverPendingToolUses(event.stop_reason.event_ids);
+        if (recovery === "aborted") {
+          return "stop";
+        }
+        if (recovery === "resolved") {
+          // Reopen the stream so the resumed session's events are consumed.
+          sessionLogger.debug(
+            { eventId: event.id },
+            "recovered pending tool result(s); reopening stream",
+          );
+          return "stop";
+        }
+        // recovery === "none": nothing recoverable here; fall through.
+      }
 
       if (toolResultSentSinceStreamStart) {
         sessionLogger.debug({ eventId: event.id }, "idle after tool result; reopening stream");
