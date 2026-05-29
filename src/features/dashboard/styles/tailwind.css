@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@config "../../../../tailwind.config.ts";
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(20, 184, 166, 0.06), transparent 60%),
+      radial-gradient(ellipse 50% 30% at 100% 100%, rgba(20, 184, 166, 0.04), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0b1220;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #27324a;
+    border-radius: 5px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a4760;
+  }
+
+  * {
+    scrollbar-color: #27324a #0b1220;
+  }
+
+  ::selection {
+    background: rgba(20, 184, 166, 0.25);
+    color: #f3f6fb;
+  }
+}

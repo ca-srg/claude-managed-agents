@@ -1,0 +1,114 @@
+import { CHILD_AGENT_NAME } from "@/shared/constants";
+
+/**
+ * Child runtime prompt builder. Used as the system prompt for the
+ * implementer agent. Per Managed Agents' multi-agent coordinator topology
+ * the parent now delegates work via thread messages rather than spawning a
+ * separate session, so the prompt only needs static guidance — branch name,
+ * task spec, etc. arrive in subsequent thread messages from the parent.
+ */
+export type BuildChildPromptArgs = {
+  repoOwner: string;
+  repoName: string;
+  branch: string;
+  baseBranch: string;
+  git: {
+    authorName: string;
+    authorEmail: string;
+  };
+  commitStyle: string;
+  /**
+   * Repository-specific instructions appended to the runtime prompt as an
+   * additional section. The body is passed through verbatim. When omitted or
+   * blank, no extra section is rendered (preserving byte-identical output for
+   * repositories without an override).
+   */
+  repoPrompt?: string | null;
+};
+
+export function buildChildPrompt({
+  repoOwner,
+  repoName,
+  branch,
+  baseBranch,
+  git,
+  commitStyle,
+  repoPrompt,
+}: BuildChildPromptArgs): string {
+  const basePrompt = `You are \`${CHILD_AGENT_NAME}\`, a task-implementer sub-agent. The orchestrator will deliver each task to you as a thread message via Managed Agents' multi-agent coordinator topology.
+
+Repository: ${repoOwner}/${repoName}
+Working branch: ${branch}
+Base branch: ${baseBranch}
+
+For every task you receive from the parent thread, follow this exact procedure:
+
+1. Configure git and check out the working branch:
+   \`\`\`
+   git config user.name "${git.authorName}"
+   git config user.email "${git.authorEmail}"
+   git fetch origin
+   git checkout -B ${branch} origin/${branch} || git checkout -B ${branch} origin/${baseBranch}
+   git pull --ff-only origin ${branch} || true
+   \`\`\`
+
+2. Implement the task strictly within the repository, following the task's acceptance criteria and the existing patterns and style in the codebase.
+
+3. Run \`bun test\` before committing if \`package.json\` has a test script. If no test script exists, explicitly state that in your reply.
+
+4. Commit using the ${commitStyle} format (\`{type}({scope}): {subject}\`). Push the branch:
+   \`\`\`
+   git push -u origin ${branch}
+   \`\`\`
+
+5. Reply to the parent thread with a JSON code block summarizing the outcome. The orchestrator parses this block to track per-task results, so the schema MUST match exactly:
+   \`\`\`json
+   {
+     "taskId": "<echo the parent's taskId>",
+     "success": true,
+     "commitSha": "<sha you just pushed>",
+     "filesChanged": ["path/one", "path/two"],
+     "testOutput": "<short summary or last lines of bun test>"
+   }
+   \`\`\`
+   On failure, return:
+   \`\`\`json
+   {
+     "taskId": "<echo the parent's taskId>",
+     "success": false,
+     "error": {
+       "type": "<short type, e.g. test_failed | build_failed | unknown>",
+       "message": "<one-sentence explanation>",
+       "stderr": "<optional last lines of stderr>"
+     }
+   }
+   \`\`\`
+
+Critical guardrails:
+- MUST NOT spawn or delegate to any other sub-agent.
+- MUST NOT install unrelated dependencies.
+- MUST NOT edit files outside the repository.
+- MUST NOT push to any branch other than \`${branch}\`.
+- MUST NOT run destructive commands (e.g., \`rm -rf /\`).
+- MUST NOT modify another sub-task's commits unless the parent explicitly asks you to do so as part of a retry.`;
+
+  const repoSection = renderRepoPromptSection(repoOwner, repoName, repoPrompt);
+  return repoSection === null ? basePrompt : `${basePrompt}\n${repoSection}\n`;
+}
+
+function renderRepoPromptSection(
+  repoOwner: string,
+  repoName: string,
+  repoPrompt: string | null | undefined,
+): string | null {
+  if (typeof repoPrompt !== "string") {
+    return null;
+  }
+
+  const trimmed = repoPrompt.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  return `\n## Repository-specific instructions for ${repoOwner}/${repoName}\n\n${trimmed}\n\nThese instructions take precedence over generic guidance when they conflict, but you MUST still respect the critical guardrails above.`;
+}

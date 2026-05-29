@@ -1,0 +1,56 @@
+# fly.toml app configuration file generated for claude-managed-agents on 2026-05-14T22:42:30+09:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'claude-managed-agents'
+primary_region = 'nrt'
+
+[build]
+
+[deploy]
+  strategy = 'immediate'
+
+# Public ingress is provided exclusively by the cloudflared sidecar
+# (see scripts/start.sh, Dockerfile). Fly.io does NOT publish :3000, :8096,
+# or :8097 — there is no [http_service] / [[services]] block on purpose.
+# The bun app, mcp-proxy, and MCP gateway bind to 127.0.0.1 so they are only
+# reachable from cloudflared running inside the same machine.
+#
+# Required secret:
+#   fly secrets set CLOUDFLARE_TUNNEL_TOKEN=<token-from-zero-trust-dashboard>
+#   fly secrets set MCP_GATEWAY_TOKEN=<random-token>
+#
+# Public-hostname routing (e.g. app.example.com -> :3000,
+# mcp.example.com -> :8097) is configured in the Cloudflare Zero Trust
+# dashboard under Tunnels -> Public Hostnames.
+
+[env]
+  DB_PATH = '/data/dashboard.db'
+  HOST = '127.0.0.1'
+  LOG_LEVEL = 'info'
+  MCP_PROXY_ALLOW_ORIGIN = '*'
+  MCP_PROXY_CONFIG = '/etc/mcp-proxy/mcp-proxy.json'
+  MCP_PROXY_HOST = '127.0.0.1'
+  MCP_PROXY_PORT = '8096'
+  MCP_GATEWAY_HOST = '127.0.0.1'
+  MCP_GATEWAY_PORT = '8097'
+  MCP_GATEWAY_ALLOWED_CLIENT_CIDRS = '160.79.104.0/21'
+  MCP_GATEWAY_UPSTREAM_URL = 'http://127.0.0.1:8096'
+  PORT = '3000'
+
+[[mounts]]
+  source = 'data'
+  destination = '/data'
+  initial_size = '1gb'
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = '1gb'
+  auto_extend_size_limit = '10gb'
+
+[[restart]]
+  policy = 'always'
+
+[[vm]]
+  size = 'shared-cpu-2x'
+  memory = '2gb'
+  cpus = 1

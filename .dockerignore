@@ -1,0 +1,35 @@
+# VCS / editor noise
+.git
+.gitignore
+.dockerignore
+.gitattributes
+
+# Local runtime / agent state
+.github-issue-agent
+.sisyphus
+.playwright-cli
+
+# Local secrets and direnv
+.env
+.env.local
+.envrc
+*.pem
+
+# Built artifacts and caches (rebuilt inside the image)
+node_modules
+dist
+coverage
+
+# Docs and meta files (not needed at runtime)
+docs
+README.md
+AGENTS.md
+
+# Tests are not shipped to production runtime
+test
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+
+# Logs
+*.log
