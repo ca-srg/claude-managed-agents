@@ -15,7 +15,8 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 import type { Logger } from "pino";
 
-export type ToolHandler = (args: unknown) => Promise<unknown>;
+export type ToolHandlerContext = { signal: AbortSignal };
+export type ToolHandler = (args: unknown, context: ToolHandlerContext) => Promise<unknown>;
 export type ToolHandlerMap = Record<string, ToolHandler>;
 
 export type ThreadCreatedEvent = {
@@ -493,6 +494,18 @@ async function promiseWithAbort<TValue>(
   }
 }
 
+function linkAbortSignal(source: AbortSignal, target: AbortController): () => void {
+  if (source.aborted) {
+    target.abort();
+    return () => {};
+  }
+
+  const abortTarget = () => target.abort();
+  source.addEventListener("abort", abortTarget, { once: true });
+
+  return () => source.removeEventListener("abort", abortTarget);
+}
+
 /**
  * Race a promise against a timeout and an abort signal. Returns the resolved
  * value, {@link TIMED_OUT} if the deadline elapses first, or
@@ -692,19 +705,23 @@ export async function runSession(
     }
 
     let handlerOutput: unknown;
+    const handlerController = new AbortController();
+    const unlinkHandlerAbort = linkAbortSignal(controller.signal, handlerController);
     try {
       const outcome = await raceWithTimeout(
-        handler(event.input),
+        handler(event.input, { signal: handlerController.signal }),
         toolHandlerTimeoutMs,
         controller.signal,
       );
 
       if (outcome === ABORTED_ITERATION) {
+        handlerController.abort();
         // Session is aborting; cleanup will interrupt/delete. Skip the send.
         return;
       }
 
       if (outcome === TIMED_OUT) {
+        handlerController.abort();
         toolErrors += 1;
         sessionLogger.error(
           { eventId: event.id, timeoutMs: toolHandlerTimeoutMs, toolName: event.name },
@@ -727,6 +744,8 @@ export async function runSession(
       );
       await sendToolResult(event, buildHandlerErrorPayload(error), true);
       return;
+    } finally {
+      unlinkHandlerAbort();
     }
 
     // Sent outside the try so a send failure surfaces as a reconnect (handled by
@@ -1029,6 +1048,11 @@ export async function runSession(
     if (event.type === "session.status_idle") {
       markProcessed(event);
 
+      if (toolResultSentSinceStreamStart) {
+        sessionLogger.debug({ eventId: event.id }, "idle after tool result; reopening stream");
+        return "stop";
+      }
+
       // The session is blocking on one or more client-input events (typically a
       // custom tool result). Resolve any we missed/hung on before treating idle
       // as terminal — otherwise a single dropped result strands the run.
@@ -1046,11 +1070,6 @@ export async function runSession(
           return "stop";
         }
         // recovery === "none": nothing recoverable here; fall through.
-      }
-
-      if (toolResultSentSinceStreamStart) {
-        sessionLogger.debug({ eventId: event.id }, "idle after tool result; reopening stream");
-        return "stop";
       }
 
       if ((await settleAbortAwareDelay(controller.signal, idleGraceMs)) === "aborted") {

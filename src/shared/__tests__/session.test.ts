@@ -852,6 +852,38 @@ describe("runSession", () => {
     expect(sessionResult.idleReached).toBe(true);
   });
 
+  test("requires_action idle after an in-stream tool result reopens without redispatch", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-current", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      // If requires_action recovery runs here it would find and redispatch this tool use.
+      listScripts: [[finalPrToolUse]],
+      streamScripts: [
+        [finalPrToolUse, createRequiresActionIdleEvent("evt-idle-current", ["evt-final-current"])],
+        [createIdleEvent("evt-idle-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-requires-action-current-stream",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.listCalls).toHaveLength(0);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
   test("requires_action idle does not re-dispatch a tool use that already has a result", async () => {
     let finalPrCalls = 0;
     const finalPrToolUse = createCustomToolUseEvent("evt-final-done", "create_final_pr", {});
@@ -886,6 +918,8 @@ describe("runSession", () => {
 
   test("custom tool handler timeout sends an error result instead of stranding the session", async () => {
     const hangingToolUse = createCustomToolUseEvent("evt-hang", "create_final_pr", {});
+    let handlerSignal: AbortSignal | undefined;
+    let handlerSignalAborted = false;
     const { calls, client } = createFakeSessionClient({
       listScripts: [[]],
       streamScripts: [
@@ -897,7 +931,13 @@ describe("runSession", () => {
     const sessionResult = await runSession(client, {
       handlers: {
         // Never resolves: simulates a hung create_final_pr handler.
-        create_final_pr: () => new Promise<never>(() => {}),
+        create_final_pr: (_args, context) => {
+          handlerSignal = context.signal;
+          context.signal.addEventListener("abort", () => {
+            handlerSignalAborted = true;
+          });
+          return new Promise<never>(() => {});
+        },
       },
       logger: createTestLogger(),
       sessionId: "sesn-handler-timeout",
@@ -917,6 +957,8 @@ describe("runSession", () => {
       throw new Error("Expected handler timeout error payload");
     }
     expect(payload.error.type).toBe("handler_timeout");
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(handlerSignalAborted).toBe(true);
     expect(sessionResult.toolErrors).toBe(1);
   });
 

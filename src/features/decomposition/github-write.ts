@@ -17,6 +17,7 @@ export type CreateSubIssueOptions = {
   parentId: number;
   parentN: number;
   repo: string;
+  signal?: AbortSignal;
   task: DecomposedTask;
 };
 
@@ -64,6 +65,12 @@ function assertGitHubIssue(value: unknown, context: string): GitHubIssue {
   }
 
   return value;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("create_sub_issue aborted");
+  }
 }
 
 function buildTitleHashToken(titleHash: string): string {
@@ -126,11 +133,14 @@ export async function closeOrphanIssue(
   repo: string,
   issueNumber: number,
   logger?: Pick<Logger, "warn">,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   try {
     await octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
       issue_number: issueNumber,
       owner,
+      ...(signal ? { request: { signal } } : {}),
       repo,
       state: "closed",
       state_reason: "not_planned",
@@ -185,11 +195,13 @@ export async function createSubIssue(
     );
   }
 
+  throwIfAborted(options.signal);
   const createIssueResponse = await octokit.request("POST /repos/{owner}/{repo}/issues", {
     assignees: options.assignees,
     body: buildSubIssueBody(options.parentN, options.parentId, options.task),
     labels: options.labels,
     owner: options.owner,
+    ...(options.signal ? { request: { signal: options.signal } } : {}),
     repo: options.repo,
     title: buildSubIssueTitle(options.parentN, options.task),
   });
@@ -198,10 +210,12 @@ export async function createSubIssue(
     `created sub-issue for #${options.parentN}`,
   );
 
+  throwIfAborted(options.signal);
   try {
     await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues", {
       issue_number: options.parentN,
       owner: options.owner,
+      ...(options.signal ? { request: { signal: options.signal } } : {}),
       repo: options.repo,
       sub_issue_id: createdIssue.id,
     });
@@ -221,6 +235,7 @@ export async function createSubIssue(
       options.repo,
       createdIssue.number,
       options.logger,
+      options.signal,
     );
     throw error;
   }

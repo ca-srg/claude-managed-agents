@@ -30,7 +30,7 @@ import {
   originShortDisplay,
   type RunOrigin,
 } from "@/shared/run-origin";
-import type { runSession, ThreadObserver } from "@/shared/session";
+import type { runSession, ThreadObserver, ToolHandlerContext } from "@/shared/session";
 import type { acquireRunLock, readAgentState, releaseRunLock, writeRunState } from "@/shared/state";
 import type { RunPhase, RunState, RunStatus } from "@/shared/types";
 import type {
@@ -1295,7 +1295,7 @@ export async function runIssueOrchestration(
     throwIfAborted(sessionController.signal);
 
     const handlers = {
-      create_final_pr: async (args: unknown) => {
+      create_final_pr: async (args: unknown, context: ToolHandlerContext) => {
         notifyPhase("finalize_pr");
         const finalPrOutcome = await deps.handleCreateFinalPr(
           {
@@ -1307,18 +1307,21 @@ export async function runIssueOrchestration(
             parentIssueNumber: origin.type === "github_issue" ? origin.issueNumber : undefined,
             repo: repoName,
             runState: runState as RunState,
+            signal: context.signal,
           },
           args,
         );
 
         if (finalPrOutcome.success) {
+          throwIfAborted(context.signal);
           runState = { ...(runState as RunState), prUrl: finalPrOutcome.prUrl };
+          throwIfAborted(context.signal);
           await writeAndSyncRunState();
         }
 
         return finalPrOutcome;
       },
-      create_sub_issue: async (args: unknown) => {
+      create_sub_issue: async (args: unknown, context: ToolHandlerContext) => {
         notifyPhase("decomposition");
         if (origin.type !== "github_issue" || parentIssueId === undefined) {
           return {
@@ -1344,12 +1347,14 @@ export async function runIssueOrchestration(
             parentIssueNumber: origin.issueNumber,
             repo: repoName,
             runState: runState as RunState,
+            signal: context.signal,
             writeRunState: deps.writeRunState,
           },
           args,
         );
 
         if ((runState as RunState).subIssues !== previousSubIssues) {
+          throwIfAborted(context.signal);
           await syncRunToDb();
         }
 

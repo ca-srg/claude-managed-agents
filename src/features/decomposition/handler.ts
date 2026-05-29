@@ -39,6 +39,7 @@ export type CreateSubIssueContext = {
   parentIssueNumber: number;
   repo: string;
   runState: RunState;
+  signal?: AbortSignal;
   writeRunState?: WriteRunState;
 };
 
@@ -109,6 +110,12 @@ function unexpectedErrorDetails(error: unknown): unknown {
   };
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("create_sub_issue aborted");
+  }
+}
+
 export async function handleCreateSubIssue(
   ctx: CreateSubIssueContext,
   args: unknown,
@@ -125,6 +132,7 @@ export async function handleCreateSubIssue(
   const subIssueTask = buildTask(parsedInput.data);
 
   try {
+    throwIfAborted(ctx.signal);
     const creation = await createSubIssue(ctx.octokit, {
       assignees: parsedInput.data.assignees ?? [],
       existingSubIssues: ctx.existingSubIssues,
@@ -134,8 +142,10 @@ export async function handleCreateSubIssue(
       parentId: ctx.parentIssueId,
       parentN: ctx.parentIssueNumber,
       repo: ctx.repo,
+      signal: ctx.signal,
       task: subIssueTask,
     });
+    throwIfAborted(ctx.signal);
 
     const nextRunState: RunState = {
       ...ctx.runState,
@@ -147,7 +157,9 @@ export async function handleCreateSubIssue(
     };
     const persistRunState = ctx.writeRunState ?? defaultWriteRunState;
 
+    throwIfAborted(ctx.signal);
     await persistRunState(ctx.runState.runId, nextRunState);
+    throwIfAborted(ctx.signal);
     ctx.runState.subIssues = nextRunState.subIssues;
 
     return {
