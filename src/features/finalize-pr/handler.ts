@@ -35,6 +35,7 @@ export type CreateFinalPrContext = {
   origin?: RunOrigin;
   parentIssueNumber?: number;
   baseBranch?: string;
+  signal?: AbortSignal;
 };
 
 export type CreateFinalPrResult = CreateFinalPrSuccess | CreateFinalPrFailure;
@@ -113,7 +114,14 @@ function normalizeConfiguredBase(baseBranch?: string): string | undefined {
   return trimmedBaseBranch.length > 0 ? trimmedBaseBranch : undefined;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("create_final_pr aborted");
+  }
+}
+
 async function normalizeArgs(ctx: CreateFinalPrContext, args: unknown): Promise<unknown> {
+  throwIfAborted(ctx.signal);
   if (!isRecord(args) || typeof args.base !== "string") {
     return args;
   }
@@ -130,7 +138,7 @@ async function normalizeArgs(ctx: CreateFinalPrContext, args: unknown): Promise<
     ...args,
     base:
       normalizeConfiguredBase(ctx.baseBranch) ??
-      (await createFinalPrDeps.resolveDefaultBranch(ctx.octokit, ctx.owner, ctx.repo)),
+      (await createFinalPrDeps.resolveDefaultBranch(ctx.octokit, ctx.owner, ctx.repo, ctx.signal)),
   };
 }
 
@@ -185,6 +193,7 @@ export async function handleCreateFinalPr(
   );
 
   try {
+    throwIfAborted(ctx.signal);
     const prResult = await createFinalPrDeps.createOrUpdatePR(ctx.octokit, {
       base: parsedInput.data.base,
       body: requestBody,
@@ -192,6 +201,7 @@ export async function handleCreateFinalPr(
       head: parsedInput.data.head,
       owner: ctx.owner,
       repo: ctx.repo,
+      signal: ctx.signal,
       title: parsedInput.data.title,
     });
 

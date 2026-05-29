@@ -64,6 +64,11 @@ function buildSessionResult(overrides: Partial<SessionResult> = {}): SessionResu
   };
 }
 
+function createToolHandlerContext() {
+  const controller = new AbortController();
+  return { signal: controller.signal };
+}
+
 function createMockDb() {
   const calls = {
     phases: [] as Array<{ phase: RunPhase | null; runId: string }>,
@@ -225,13 +230,16 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
       },
     })) as RunExecutionDeps["runPreflight"],
     runSession: (async (_client, options) => {
-      await options.handlers.create_final_pr?.({
-        base: "main",
-        body: "Ready for review",
-        head: "agent/issue-42/fix-login-flow",
-        parentIssueNumber: 42,
-        title: "Fix login flow",
-      });
+      await options.handlers.create_final_pr?.(
+        {
+          base: "main",
+          body: "Ready for review",
+          head: "agent/issue-42/fix-login-flow",
+          parentIssueNumber: 42,
+          title: "Fix login flow",
+        },
+        createToolHandlerContext(),
+      );
 
       return buildSessionResult({ sessionId: options.sessionId });
     }) as RunExecutionDeps["runSession"],
@@ -257,18 +265,24 @@ describe("runIssueOrchestration run-events integration", () => {
     const harness = createHarness({
       runEvents: runEvents.runEvents,
       runSession: (async (_client, options) => {
-        await options.handlers.create_sub_issue?.({ body: "Sub task", title: "Sub task" });
+        await options.handlers.create_sub_issue?.(
+          { body: "Sub task", title: "Sub task" },
+          createToolHandlerContext(),
+        );
         options.threadObserver?.onThreadCreated?.({
           agentName: "github-issue-implementer",
           sessionThreadId: "thread-1",
         });
-        await options.handlers.create_final_pr?.({
-          base: "main",
-          body: "Ready for review",
-          head: "agent/issue-42/fix-login-flow",
-          parentIssueNumber: 42,
-          title: "Fix login flow",
-        });
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
 
         return buildSessionResult({ sessionId: options.sessionId });
       }) as RunExecutionDeps["runSession"],
@@ -313,13 +327,16 @@ describe("runIssueOrchestration run-events integration", () => {
           agentName: "github-issue-implementer",
           sessionThreadId: "thread-1",
         });
-        await options.handlers.create_final_pr?.({
-          base: "main",
-          body: "Ready for review",
-          head: "agent/issue-42/fix-login-flow",
-          parentIssueNumber: 42,
-          title: "Fix login flow",
-        });
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
 
         return buildSessionResult({ sessionId: options.sessionId });
       }) as RunExecutionDeps["runSession"],
@@ -358,14 +375,20 @@ describe("runIssueOrchestration run-events integration", () => {
     const harness = createHarness({
       runEvents: runEvents.runEvents,
       runSession: (async (_client, options) => {
-        await options.handlers.create_sub_issue?.({ body: "Sub task", title: "Sub task" });
-        await options.handlers.create_final_pr?.({
-          base: "main",
-          body: "Ready for review",
-          head: "agent/issue-42/fix-login-flow",
-          parentIssueNumber: 42,
-          title: "Fix login flow",
-        });
+        await options.handlers.create_sub_issue?.(
+          { body: "Sub task", title: "Sub task" },
+          createToolHandlerContext(),
+        );
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
 
         return buildSessionResult({ sessionId: options.sessionId });
       }) as RunExecutionDeps["runSession"],

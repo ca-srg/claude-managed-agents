@@ -15,7 +15,7 @@ type ScriptInstruction<TEvent> = TEvent | { error: Error; kind: "throw" } | { ki
 
 type FakeSessionScript = {
   listScripts?: Array<ReadonlyArray<ScriptInstruction<BetaManagedAgentsSessionEvent>>>;
-  onSend?: (params: EventSendParams, calls: FakeSessionCalls) => void;
+  onSend?: (params: EventSendParams, calls: FakeSessionCalls) => PromiseLike<unknown> | undefined;
   streamScripts: Array<ReadonlyArray<ScriptInstruction<BetaManagedAgentsStreamSessionEvents>>>;
 };
 
@@ -127,6 +127,61 @@ function createIdleEvent(
   };
 }
 
+function createRequiresActionIdleEvent(
+  id: string,
+  eventIds: ReadonlyArray<string>,
+): Extract<BetaManagedAgentsSessionEvent, { type: "session.status_idle" }> {
+  return {
+    id,
+    processed_at: PROCESSED_AT,
+    stop_reason: { event_ids: [...eventIds], type: "requires_action" },
+    type: "session.status_idle",
+  };
+}
+
+function createCustomToolResultEvent(
+  id: string,
+  customToolUseId: string,
+): Extract<BetaManagedAgentsSessionEvent, { type: "user.custom_tool_result" }> {
+  return {
+    custom_tool_use_id: customToolUseId,
+    id,
+    type: "user.custom_tool_result",
+  };
+}
+
+function createMcpConnectionErrorEvent(
+  id: string,
+  mcpServerName: string,
+): Extract<BetaManagedAgentsSessionEvent, { type: "session.error" }> {
+  return {
+    error: {
+      mcp_server_name: mcpServerName,
+      message: `MCP server '${mcpServerName}' initialize failed: upstream server error (HTTP 502)`,
+      retry_status: { type: "exhausted" },
+      type: "mcp_connection_failed_error",
+    },
+    id,
+    processed_at: PROCESSED_AT,
+    type: "session.error",
+  };
+}
+
+function createModelErrorEvent(
+  id: string,
+): Extract<BetaManagedAgentsSessionEvent, { type: "session.error" }> {
+  return {
+    error: {
+      message: "model overloaded",
+      retry_status: { type: "retrying" },
+      type: "model_overloaded_error",
+    },
+    id,
+    processed_at: PROCESSED_AT,
+    type: "session.error",
+  };
+}
+
 function createAgentMessageEvent(
   id: string,
   textBlocks: ReadonlyArray<string>,
@@ -198,7 +253,10 @@ function createFakeSessionClient(script: FakeSessionScript): {
         events: {
           async send(_sessionId, params) {
             calls.sends.push(params);
-            script.onSend?.(params, calls);
+            const sendOutcome = script.onSend?.(params, calls);
+            if (sendOutcome) {
+              return await sendOutcome;
+            }
             return { ok: true };
           },
           list(_sessionId, params) {
@@ -594,6 +652,7 @@ describe("runSession", () => {
     const { calls, client } = createFakeSessionClient({
       onSend: () => {
         abortController.abort();
+        return undefined;
       },
       streamScripts: [
         [
@@ -758,5 +817,425 @@ describe("runSession", () => {
       (line) => line.msg === "agent message" && line.eventId === "evt-msg-3",
     );
     expect(messageLogLine).toBeUndefined();
+  });
+
+  test("requires_action idle recovers a pending custom tool use missed by the stream", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-ra", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      // History holds the tool use but no result yet (the live stream missed it).
+      listScripts: [[finalPrToolUse]],
+      streamScripts: [
+        [
+          createRunningEvent("evt-run-ra"),
+          createRequiresActionIdleEvent("evt-idle-ra", ["evt-final-ra"]),
+        ],
+        [createIdleEvent("evt-idle-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-requires-action",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    const recoveredResult = getFirstCustomToolResultEvent(getRequiredSend(calls, 0));
+    expect(recoveredResult.custom_tool_use_id).toBe("evt-final-ra");
+    expect(recoveredResult.is_error).toBeUndefined();
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("recovered custom tool use is marked processed before a later replay", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-replay-once", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[finalPrToolUse], [finalPrToolUse, createIdleEvent("evt-idle-replay-done")]],
+      streamScripts: [
+        [
+          createRunningEvent("evt-run-replay-once"),
+          createRequiresActionIdleEvent("evt-idle-replay-once", ["evt-final-replay-once"]),
+        ],
+        [],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-recovered-replay-once",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.listCalls).toHaveLength(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("replay resends a cached result after send timeouts without rerunning the handler", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-send-timeout", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[finalPrToolUse], [finalPrToolUse]],
+      onSend: () => new Promise<never>(() => {}),
+      streamScripts: [[createRunningEvent("evt-run-send-timeout"), finalPrToolUse]],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-send-timeout-cache-replay",
+      timeouts: {
+        maxWallClockMs: 10_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(9);
+    expect(calls.listCalls).toHaveLength(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.errored).toBe(true);
+  });
+
+  test("replay skips cached resend when history already resolved a locally timed-out send", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent(
+      "evt-final-send-timeout-resolved",
+      "create_final_pr",
+      {
+        title: "Ready",
+      },
+    );
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [
+        [
+          finalPrToolUse,
+          createCustomToolResultEvent("evt-result-send-timeout-resolved", finalPrToolUse.id),
+        ],
+      ],
+      onSend: () => new Promise<never>(() => {}),
+      streamScripts: [
+        [createRunningEvent("evt-run-send-timeout-resolved"), finalPrToolUse],
+        [createIdleEvent("evt-idle-send-timeout-resolved")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-send-timeout-history-resolved",
+      timeouts: {
+        maxWallClockMs: 5_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(3);
+    expect(calls.listCalls).toHaveLength(1);
+    expect(calls.streamCalls).toBe(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+    expect(sessionResult.errored).toBe(false);
+  });
+
+  test("requires_action recovery resends an unresolved cached result and marks it processed", async () => {
+    let finalPrCalls = 0;
+    let sendCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent(
+      "evt-final-cached-recovery",
+      "create_final_pr",
+      {
+        title: "Ready",
+      },
+    );
+    const expectedOutput = { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[], [finalPrToolUse]],
+      onSend: () => {
+        sendCalls += 1;
+        if (sendCalls <= 3) {
+          return new Promise<never>(() => {});
+        }
+      },
+      streamScripts: [
+        [createRunningEvent("evt-run-cached-recovery"), finalPrToolUse],
+        [createRequiresActionIdleEvent("evt-idle-cached-recovery", [finalPrToolUse.id])],
+        [finalPrToolUse, createIdleEvent("evt-idle-cached-recovery-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return expectedOutput;
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-cached-recovery",
+      timeouts: {
+        maxWallClockMs: 5_000,
+        streamReconnectDelayMs: 0,
+        toolResultSendTimeoutMs: 1,
+      },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(4);
+    expect(parseFirstTextPayload(getRequiredSend(calls, 3))).toEqual(expectedOutput);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("requires_action idle after an in-stream tool result reopens without redispatch", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-current", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      // If requires_action recovery runs here it would find and redispatch this tool use.
+      listScripts: [[finalPrToolUse]],
+      streamScripts: [
+        [finalPrToolUse, createRequiresActionIdleEvent("evt-idle-current", ["evt-final-current"])],
+        [createIdleEvent("evt-idle-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-requires-action-current-stream",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.listCalls).toHaveLength(0);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("requires_action idle does not re-dispatch a tool use that already has a result", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-done", "create_final_pr", {});
+    const { calls, client } = createFakeSessionClient({
+      // History already contains the result, so recovery must be a no-op.
+      listScripts: [[finalPrToolUse, createCustomToolResultEvent("evt-res", "evt-final-done")]],
+      streamScripts: [
+        [
+          createRunningEvent("evt-run-done"),
+          createRequiresActionIdleEvent("evt-idle-already", ["evt-final-done"]),
+        ],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-already-resolved",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    // No re-dispatch, no duplicate send, and idle is treated as terminal.
+    expect(finalPrCalls).toBe(0);
+    expect(calls.sends).toHaveLength(0);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("custom tool handler timeout sends an error result instead of stranding the session", async () => {
+    const hangingToolUse = createCustomToolUseEvent("evt-hang", "create_final_pr", {});
+    let handlerSignal: AbortSignal | undefined;
+    let handlerSignalAborted = false;
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[]],
+      streamScripts: [
+        [createRunningEvent("evt-run-hang"), hangingToolUse],
+        [createIdleEvent("evt-idle-after-timeout")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        // Never resolves: simulates a hung create_final_pr handler.
+        create_final_pr: (_args, context) => {
+          handlerSignal = context.signal;
+          context.signal.addEventListener("abort", () => {
+            handlerSignalAborted = true;
+          });
+          return new Promise<never>(() => {});
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-handler-timeout",
+      timeouts: {
+        maxWallClockMs: 2_000,
+        streamReconnectDelayMs: 0,
+        toolHandlerTimeoutMs: 20,
+      },
+    });
+
+    const timeoutResult = getFirstCustomToolResultEvent(getRequiredSend(calls, 0));
+    expect(timeoutResult.custom_tool_use_id).toBe("evt-hang");
+    expect(timeoutResult.is_error).toBe(true);
+    const payload = parseFirstTextPayloadRecord(getRequiredSend(calls, 0));
+    expect(isRecord(payload.error)).toBe(true);
+    if (!isRecord(payload.error)) {
+      throw new Error("Expected handler timeout error payload");
+    }
+    expect(payload.error.type).toBe("handler_timeout");
+    expect(handlerSignal?.aborted).toBe(true);
+    expect(handlerSignalAborted).toBe(true);
+    expect(sessionResult.toolErrors).toBe(1);
+  });
+
+  test("requires_action recovery is bounded and finally sends a terminal error result", async () => {
+    let handlerCalls = 0;
+    const loopToolUse = createCustomToolUseEvent("evt-loop", "create_final_pr", {});
+    const { calls, client } = createFakeSessionClient({
+      // Result never registers in history, so each idle re-blocks on the same id.
+      listScripts: [[loopToolUse], [loopToolUse], [loopToolUse]],
+      streamScripts: [
+        [
+          createRunningEvent("evt-run-loop"),
+          createRequiresActionIdleEvent("evt-idle-1", ["evt-loop"]),
+        ],
+        [createRequiresActionIdleEvent("evt-idle-2", ["evt-loop"])],
+        [createRequiresActionIdleEvent("evt-idle-3", ["evt-loop"])],
+        [createIdleEvent("evt-idle-done")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          handlerCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-bounded-recovery",
+      timeouts: { maxWallClockMs: 2_000, streamReconnectDelayMs: 0 },
+    });
+
+    // attempt 0 dispatches the handler; attempt 1 resends the cached result;
+    // attempt 2 (>= MAX) sends a terminal error without rerunning the handler.
+    expect(handlerCalls).toBe(1);
+    const lastSend = calls.sends[calls.sends.length - 1];
+    if (!lastSend) {
+      throw new Error("Expected at least one send");
+    }
+    const terminalPayload = parseFirstTextPayloadRecord(lastSend);
+    expect(isRecord(terminalPayload.error)).toBe(true);
+    if (!isRecord(terminalPayload.error)) {
+      throw new Error("Expected terminal recovery error payload");
+    }
+    expect(terminalPayload.error.type).toBe("tool_recovery_exhausted");
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("session.error from an MCP connection failure does not tear down the session", async () => {
+    let finalPrCalls = 0;
+    const { calls, client } = createFakeSessionClient({
+      streamScripts: [
+        [
+          createMcpConnectionErrorEvent("evt-mcp-err", "Kibela"),
+          createCustomToolUseEvent("evt-final-after-mcp", "create_final_pr", {}),
+          createIdleEvent("evt-idle"),
+        ],
+        [createIdleEvent("evt-idle-final")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-mcp-error",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    // The MCP error did not throw/reconnect: the same stream kept flowing and
+    // the subsequent create_final_pr was handled. No events.list replay means
+    // no reconnect path was taken.
+    expect(finalPrCalls).toBe(1);
+    expect(calls.listCalls).toHaveLength(0);
+    expect(sessionResult.errored).toBe(false);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("session.error from a model error still triggers a reconnect", async () => {
+    const toolUseEvent = createCustomToolUseEvent("evt-tool-model", "create_sub_issue", {
+      title: "x",
+    });
+    const handlerInputs: unknown[] = [];
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[toolUseEvent]],
+      streamScripts: [[createModelErrorEvent("evt-model-err")], [createIdleEvent("evt-idle")]],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_sub_issue: async (args) => {
+          handlerInputs.push(args);
+          return { success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-model-error",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    // Model error throws -> reconnect -> events.list replay dispatches the tool.
+    expect(calls.listCalls.length >= 1).toBe(true);
+    expect(handlerInputs).toEqual([{ title: "x" }]);
+    expect(sessionResult.idleReached).toBe(true);
   });
 });

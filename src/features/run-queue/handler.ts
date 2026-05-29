@@ -63,6 +63,10 @@ export type StopOptions = {
   force?: boolean;
 };
 
+export type StartOptions = {
+  resyncExcludeRunIds?: readonly string[];
+};
+
 const DEFAULT_CANCEL_TIMEOUT_MS = 5_000;
 const STATUS_LOOKUP_LIMIT = 10_000;
 
@@ -166,11 +170,10 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
   const queue: QueuedJob[] = [];
   let busy = false;
   let currentJob: RunningJob | undefined;
+  let orphanResyncCompleted = false;
   let started = false;
   let stopping = false;
   let workerPromise: Promise<void> | undefined;
-
-  deps.db.resyncOrphanedRuns();
 
   function emitPhase(runId: string, phase: QueuePhase): void {
     deps.runEvents.emit(runId, { kind: "phase", payload: { phase } });
@@ -302,6 +305,10 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
     return run?.status ?? null;
   }
 
+  function getActiveRunId(): string | null {
+    return currentJob?.runId ?? null;
+  }
+
   async function cancel(runId: string): Promise<boolean> {
     const queueIndex = queue.findIndex((job) => job.runId === runId);
     if (queueIndex >= 0) {
@@ -324,9 +331,18 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
     return completed;
   }
 
-  function start(): void {
+  function start(opts: StartOptions = {}): void {
     if (started) {
       return;
+    }
+
+    if (!orphanResyncCompleted) {
+      deps.db.resyncOrphanedRuns({ excludeRunIds: opts.resyncExcludeRunIds ?? [] });
+      // Callers may enqueue before first start; those in-memory jobs are not orphans.
+      for (const job of queue) {
+        deps.db.setRunStatus(job.runId, "queued");
+      }
+      orphanResyncCompleted = true;
     }
 
     started = true;
@@ -358,6 +374,7 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
   return {
     cancel,
     enqueue,
+    getActiveRunId,
     getStatus,
     start,
     stop,

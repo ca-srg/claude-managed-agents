@@ -18,10 +18,12 @@ type RequestCall = {
 
 type RequestOutcome =
   | {
+      after?: () => void;
       data: unknown;
       kind: "resolve";
     }
   | {
+      after?: () => void;
       error: Error;
       kind: "reject";
     };
@@ -121,9 +123,11 @@ function createMockOctokit(
       }
 
       if (nextOutcome.kind === "reject") {
+        nextOutcome.after?.();
         throw nextOutcome.error;
       }
 
+      nextOutcome.after?.();
       return { data: nextOutcome.data };
     },
     requestCalls,
@@ -139,6 +143,7 @@ describe("github decomposition write", () => {
       title: `Task A [sub-issue:${expectedHash}]`,
     });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         { data: createdIssue, kind: "resolve" },
         { data: buildIssue(), kind: "resolve" },
@@ -179,6 +184,38 @@ describe("github decomposition write", () => {
     });
   });
 
+  test("createSubIssue passes abort signals only to the read request", async () => {
+    const abortController = new AbortController();
+    const createdIssue = buildIssue({ id: 334, number: 45, title: "Child issue" });
+    const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
+      requestOutcomes: [
+        { data: createdIssue, kind: "resolve" },
+        { data: buildIssue(), kind: "resolve" },
+      ],
+    });
+
+    await createSubIssue(octokit, {
+      assignees: [],
+      existingSubIssues: [],
+      labels: [],
+      maxCap: 5,
+      owner: "acme",
+      parentId: 101,
+      parentN: 12,
+      repo: "widgets",
+      signal: abortController.signal,
+      task: taskA,
+    });
+
+    const readRequest = octokit.paginateCalls[0]?.body?.request as
+      | { signal?: AbortSignal }
+      | undefined;
+    expect(readRequest?.signal).toBe(abortController.signal);
+    expect(Object.hasOwn(octokit.requestCalls[0]?.body ?? {}, "request")).toBe(false);
+    expect(Object.hasOwn(octokit.requestCalls[1]?.body ?? {}, "request")).toBe(false);
+  });
+
   test("createSubIssue is idempotent when an existing sub-issue title contains the hash", async () => {
     const stableHash = titleHashFor(12, taskA);
     const existingSubIssue = buildIssue({
@@ -204,9 +241,38 @@ describe("github decomposition write", () => {
     expect(octokit.requestCalls).toEqual([]);
   });
 
+  test("createSubIssue reuses a live matching sub-issue when the snapshot is stale", async () => {
+    const stableHash = titleHashFor(12, taskA);
+    const liveSubIssue = buildIssue({
+      id: 405,
+      number: 56,
+      title: `Task A [sub-issue:${stableHash}]`,
+    });
+    const octokit = createMockOctokit({ paginateOutcomes: [[liveSubIssue]] });
+
+    const creation = await createSubIssue(octokit, {
+      assignees: [],
+      existingSubIssues: [],
+      labels: [],
+      maxCap: 5,
+      owner: "acme",
+      parentId: 101,
+      parentN: 12,
+      repo: "widgets",
+      task: taskA,
+    });
+
+    expect(creation).toEqual({ issue: liveSubIssue, reused: true });
+    expect(octokit.paginateCalls).toEqual([
+      { body: undefined, method: "GET", url: "/repos/acme/widgets/issues/12/sub_issues" },
+    ]);
+    expect(octokit.requestCalls).toEqual([]);
+  });
+
   test("createSubIssue closes the orphan issue when linking fails and never DELETEs an issue endpoint", async () => {
     const createdIssue = buildIssue({ id: 700, number: 71, title: "Child issue" });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         { data: createdIssue, kind: "resolve" },
         { error: new Error("link failed"), kind: "reject" },
@@ -260,15 +326,58 @@ describe("github decomposition write", () => {
     ).toBe(false);
   });
 
+  test("createSubIssue closes the orphan issue when the signal aborts after creation", async () => {
+    const abortController = new AbortController();
+    const createdIssue = buildIssue({ id: 701, number: 72, title: "Child issue" });
+    const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
+      requestOutcomes: [
+        {
+          after: () => abortController.abort(),
+          data: createdIssue,
+          kind: "resolve",
+        },
+        { error: new Error("link aborted"), kind: "reject" },
+        { data: buildIssue({ number: 72, state: "closed" }), kind: "resolve" },
+      ],
+    });
+
+    await expect(
+      createSubIssue(octokit, {
+        assignees: [],
+        existingSubIssues: [],
+        labels: [],
+        maxCap: 5,
+        owner: "acme",
+        parentId: 101,
+        parentN: 12,
+        repo: "widgets",
+        signal: abortController.signal,
+        task: taskA,
+      }),
+    ).rejects.toThrow("link aborted");
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(octokit.requestCalls).toHaveLength(3);
+    expect(octokit.requestCalls[1]?.method).toBe("POST");
+    expect(octokit.requestCalls[1]?.url).toBe("/repos/acme/widgets/issues/12/sub_issues");
+    expect(octokit.requestCalls[2]).toEqual({
+      body: { state: "closed", state_reason: "not_planned" },
+      method: "PATCH",
+      url: "/repos/acme/widgets/issues/72",
+    });
+  });
+
   test("createSubIssue enforces the configured max sub-issue cap", async () => {
-    const octokit = createMockOctokit();
+    const liveSubIssue = buildIssue({ id: 901, number: 92, title: "Already linked" });
+    const octokit = createMockOctokit({ paginateOutcomes: [[liveSubIssue]] });
 
     let thrownError: unknown;
 
     try {
       await createSubIssue(octokit, {
         assignees: [],
-        existingSubIssues: [buildIssue({ id: 901, number: 92, title: "Already linked" })],
+        existingSubIssues: [liveSubIssue],
         labels: [],
         maxCap: 1,
         owner: "acme",

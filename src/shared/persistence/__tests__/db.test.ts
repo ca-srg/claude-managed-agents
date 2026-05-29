@@ -468,6 +468,42 @@ describe("createDbModule", () => {
     ).toBeUndefined();
   });
 
+  test("getRunStatus and setRunStatusIfCurrent provide atomic status transitions", () => {
+    const run = createRunState({ runId: "run-status-cas" });
+
+    dbModule.insertRun(run);
+    expect(dbModule.getRunStatus(run.runId)).toBe("queued");
+    expect(dbModule.getRunStatus("missing-run")).toBeNull();
+
+    expect(dbModule.setRunStatusIfCurrent(run.runId, "running", ["queued"])).toBe(true);
+    expect(dbModule.getRunStatus(run.runId)).toBe("running");
+
+    expect(dbModule.setRunStatusIfCurrent(run.runId, "completed", ["queued"])).toBe(false);
+    expect(dbModule.getRunStatus(run.runId)).toBe("running");
+
+    expect(dbModule.setRunStatusIfCurrent(run.runId, "failed", [])).toBe(false);
+    expect(dbModule.getRunStatus(run.runId)).toBe("running");
+  });
+
+  test("resyncOrphanedRuns can exclude snapshot run ids", () => {
+    dbModule.insertRun(createRunState({ runId: "run-excluded-running" }));
+    dbModule.insertRun(createRunState({ runId: "run-aborted-running" }));
+    dbModule.insertRun(createRunState({ runId: "run-aborted-queued" }));
+    dbModule.insertRun(createRunState({ runId: "run-completed" }));
+    dbModule.setRunStatus("run-excluded-running", "running");
+    dbModule.setRunStatus("run-aborted-running", "running");
+    dbModule.setRunStatus("run-completed", "completed");
+
+    expect(dbModule.resyncOrphanedRuns({ excludeRunIds: ["run-excluded-running"] })).toEqual({
+      aborted: 2,
+    });
+
+    expect(dbModule.getRunStatus("run-excluded-running")).toBe("running");
+    expect(dbModule.getRunStatus("run-aborted-running")).toBe("aborted");
+    expect(dbModule.getRunStatus("run-aborted-queued")).toBe("aborted");
+    expect(dbModule.getRunStatus("run-completed")).toBe("completed");
+  });
+
   test("listRuns filters by status and repo", () => {
     dbModule.insertRun(
       createRunState({
@@ -561,7 +597,7 @@ describe("createDbModule pid migration", () => {
     }
   });
 
-  test("initDb resyncs running and queued rows as aborted", () => {
+  test("initDb preserves active rows and explicit resync aborts them", () => {
     const sharedDb = new Database(":memory:");
 
     sharedDb.exec(`
@@ -666,7 +702,7 @@ describe("createDbModule pid migration", () => {
     dbModule.initDb();
 
     try {
-      const statuses = sharedDb
+      const statusesAfterInit = sharedDb
         .query<{ runId: string; status: string }>(
           `SELECT run_id AS runId, status
            FROM runs
@@ -674,7 +710,23 @@ describe("createDbModule pid migration", () => {
         )
         .all();
 
-      expect(statuses).toEqual([
+      expect(statusesAfterInit).toEqual([
+        { runId: "completed-run", status: "completed" },
+        { runId: "queued-run", status: "queued" },
+        { runId: "running-run", status: "running" },
+      ]);
+
+      expect(dbModule.resyncOrphanedRuns()).toEqual({ aborted: 2 });
+
+      const statusesAfterResync = sharedDb
+        .query<{ runId: string; status: string }>(
+          `SELECT run_id AS runId, status
+           FROM runs
+           ORDER BY run_id ASC`,
+        )
+        .all();
+
+      expect(statusesAfterResync).toEqual([
         { runId: "completed-run", status: "completed" },
         { runId: "queued-run", status: "aborted" },
         { runId: "running-run", status: "aborted" },

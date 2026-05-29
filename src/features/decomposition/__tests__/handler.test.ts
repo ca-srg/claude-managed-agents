@@ -18,10 +18,12 @@ type RequestCall = {
 
 type RequestOutcome =
   | {
+      after?: () => void;
       data: unknown;
       kind: "resolve";
     }
   | {
+      after?: () => void;
       error: Error;
       kind: "reject";
     };
@@ -155,9 +157,11 @@ function createMockOctokit(
       }
 
       if (nextOutcome.kind === "reject") {
+        nextOutcome.after?.();
         throw nextOutcome.error;
       }
 
+      nextOutcome.after?.();
       return { data: nextOutcome.data };
     },
     requestCalls,
@@ -276,6 +280,7 @@ describe("handleCreateSubIssue", () => {
       title: `${freshTitle} [sub-issue:${expectedToken}]`,
     });
     const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
       requestOutcomes: [
         { data: createdIssue, kind: "resolve" },
         { data: buildIssue(), kind: "resolve" },
@@ -354,6 +359,78 @@ describe("handleCreateSubIssue", () => {
     ]);
   });
 
+  test("records and persists a created sub-issue when the signal aborts after creation", async () => {
+    const abortController = new AbortController();
+    const freshTitle = "Abort after create";
+    const createdIssue = buildIssue({
+      id: 334,
+      number: 45,
+      title: `${freshTitle} [sub-issue:${titleHashFor(12, {
+        acceptanceCriteria: [],
+        description: "Create succeeded before abort.",
+        id: stableTaskId(freshTitle),
+        title: freshTitle,
+      })}]`,
+    });
+    const octokit = createMockOctokit({
+      paginateOutcomes: [[]],
+      requestOutcomes: [
+        { data: createdIssue, kind: "resolve" },
+        {
+          after: () => abortController.abort(),
+          data: buildIssue(),
+          kind: "resolve",
+        },
+      ],
+    });
+    const runState = buildRunState();
+    const writeRunStateCalls: WriteRunStateCall[] = [];
+
+    const handlerOutput = await handleCreateSubIssue(
+      {
+        cfg: buildConfig(),
+        existingSubIssues: [],
+        octokit,
+        owner: "acme",
+        parentIssueId: 101,
+        parentIssueNumber: 12,
+        repo: "widgets",
+        runState,
+        signal: abortController.signal,
+        writeRunState: async (runId: string, state: RunState) => {
+          writeRunStateCalls.push({ runId, state });
+        },
+      },
+      {
+        body: "Create succeeded before abort.",
+        title: freshTitle,
+      },
+    );
+
+    const expectedSubIssue = {
+      issueId: 334,
+      issueNumber: 45,
+      taskId: stableTaskId(freshTitle),
+    };
+    expect(abortController.signal.aborted).toBe(true);
+    expect(handlerOutput).toEqual({
+      reused: false,
+      subIssueId: 334,
+      subIssueNumber: 45,
+      success: true,
+    });
+    expect(runState.subIssues).toEqual([expectedSubIssue]);
+    expect(writeRunStateCalls).toEqual([
+      {
+        runId: "run-123",
+        state: {
+          ...buildRunState(),
+          subIssues: [expectedSubIssue],
+        },
+      },
+    ]);
+  });
+
   test("dedup returns reused true and makes no POST requests", async () => {
     const dedupSubIssue = hashTaggedSubIssue(12, "Document the handler");
     const octokit = createMockOctokit();
@@ -384,12 +461,13 @@ describe("handleCreateSubIssue", () => {
   });
 
   test("returns a structured cap error when createSubIssue hits the configured cap", async () => {
-    const octokit = createMockOctokit();
+    const existingSubIssue = buildIssue({ id: 901, number: 92, title: "Already linked" });
+    const octokit = createMockOctokit({ paginateOutcomes: [[existingSubIssue]] });
 
     const handlerOutput = await handleCreateSubIssue(
       {
         cfg: buildConfig({ maxSubIssues: 1 }),
-        existingSubIssues: [buildIssue({ id: 901, number: 92, title: "Already linked" })],
+        existingSubIssues: [existingSubIssue],
         octokit,
         owner: "acme",
         parentIssueId: 101,

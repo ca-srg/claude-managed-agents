@@ -310,7 +310,7 @@ describe("createRunQueueModule", () => {
     });
   });
 
-  test("constructor resync aborts orphaned running rows", () => {
+  test("start resync aborts orphaned running rows without resyncing on construction", () => {
     const db = createDbModule(":memory:");
     openDbs.push(db);
     db.insertRun(createRunState());
@@ -319,7 +319,7 @@ describe("createRunQueueModule", () => {
     expect(getDbStatus(db, "run-orphan")).toBe("running");
 
     const runEvents = createRunEventsModule({ db });
-    createRunQueueModule({
+    const queue = createRunQueueModule({
       db,
       executor: async (input) => ({
         aborted: false,
@@ -330,7 +330,77 @@ describe("createRunQueueModule", () => {
       runEvents,
     });
 
+    expect(getDbStatus(db, "run-orphan")).toBe("running");
+
+    queue.start();
+
     expect(getDbStatus(db, "run-orphan")).toBe("aborted");
+  });
+
+  test("start resync keeps excluded startup recovery candidates running", () => {
+    const db = createDbModule(":memory:");
+    openDbs.push(db);
+    db.insertRun(createRunState({ runId: "run-orphan" }));
+    db.insertRun(createRunState({ runId: "run-startup-candidate" }));
+    db.setRunStatus("run-orphan", "running");
+    db.setRunStatus("run-startup-candidate", "running");
+
+    const runEvents = createRunEventsModule({ db });
+    const queue = createRunQueueModule({
+      db,
+      executor: async (input) => ({
+        aborted: false,
+        runId: input.runId,
+        status: "completed",
+        timedOut: false,
+      }),
+      runEvents,
+    });
+
+    queue.start({ resyncExcludeRunIds: ["run-startup-candidate"] });
+
+    expect(getDbStatus(db, "run-orphan")).toBe("aborted");
+    expect(getDbStatus(db, "run-startup-candidate")).toBe("running");
+  });
+
+  test("start performs orphan resync only once for the queue module", async () => {
+    let resyncCalls = 0;
+    const db: RunQueueModuleDeps["db"] = {
+      insertRun() {},
+      listRuns: () => [],
+      resyncOrphanedRuns: () => {
+        resyncCalls += 1;
+        return { aborted: 0 };
+      },
+      setRunStatus() {},
+    };
+    const queue = createRunQueueModule({
+      db,
+      executor: async (input) => ({
+        aborted: false,
+        runId: input.runId,
+        status: "completed",
+        timedOut: false,
+      }),
+      runEvents: {
+        emit: (runId, event) => ({
+          id: "evt-test",
+          kind: event.kind,
+          payload: event.payload,
+          runId,
+          ts: "2026-04-28T00:00:00.000Z",
+        }),
+      },
+    });
+
+    expect(resyncCalls).toBe(0);
+
+    queue.start();
+    queue.start();
+    await queue.stop();
+    queue.start();
+
+    expect(resyncCalls).toBe(1);
   });
 
   describe("error paths", () => {

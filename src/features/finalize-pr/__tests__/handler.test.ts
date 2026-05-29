@@ -203,7 +203,7 @@ function buildRunState(overrides: Partial<RunState> = {}): RunState {
 function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
   const octokit = overrides.octokit ?? new MockOctokit();
 
-  return {
+  const context: HandlerContext = {
     baseBranch: overrides.baseBranch,
     cfg: overrides.cfg ?? buildConfig(),
     octokit,
@@ -212,6 +212,12 @@ function buildContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     repo: overrides.repo ?? "widgets",
     runState: overrides.runState ?? buildRunState(),
   };
+
+  if (overrides.signal) {
+    context.signal = overrides.signal;
+  }
+
+  return context;
 }
 
 function buildValidArgs(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -436,6 +442,32 @@ describe("handleCreateFinalPr", () => {
       prUrl: "https://github.com/acme/widgets/pull/81",
       success: true,
       updated: true,
+    });
+  });
+
+  test("returns the PR result when the signal aborts after createOrUpdatePR succeeds", async () => {
+    const abortController = new AbortController();
+    createOrUpdatePRImpl = async (_octokit, _options): Promise<CreateOrUpdatePRResult> => {
+      abortController.abort();
+      return {
+        prNumber: 82,
+        prUrl: "https://github.com/acme/widgets/pull/82",
+        updated: false,
+      };
+    };
+
+    const prOutcome = await handleCreateFinalPr(
+      buildContext({ signal: abortController.signal }),
+      buildValidArgs(),
+    );
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(createOrUpdatePRCalls[0]?.signal).toBe(abortController.signal);
+    expect(prOutcome).toEqual({
+      prNumber: 82,
+      prUrl: "https://github.com/acme/widgets/pull/82",
+      success: true,
+      updated: false,
     });
   });
 });

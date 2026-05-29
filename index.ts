@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -26,6 +25,10 @@ import {
   type RunExecutionInput as QueuedRunExecutionInput,
   type RunExecutionResult as QueuedRunExecutionResult,
 } from "@/features/run-queue/handler";
+import {
+  createStaleRunReaper,
+  parseStaleRunReaperConfigFromEnv,
+} from "@/features/stale-run-reaper/reaper";
 import { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
 import { buildChildPrompt } from "@/shared/agents/prompts/child";
 import { buildParentPrompt } from "@/shared/agents/prompts/parent";
@@ -72,18 +75,6 @@ type BunRuntime = {
   }): BunServer;
 };
 
-type CountDatabase = {
-  close(): void;
-  query<Row>(sql: string): {
-    get(): Row | null | undefined;
-  };
-};
-
-type CountDatabaseConstructor = new (
-  databasePath: string,
-  options?: { readonly?: boolean },
-) => CountDatabase;
-
 type ServerEnv = {
   anthropicApiKey: string;
   configPath?: string;
@@ -98,10 +89,6 @@ type ServerEnv = {
 const DEFAULT_DB_PATH = ".github-issue-agent/dashboard.db";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
-const require = createRequire(import.meta.url);
-const { Database: ReadonlyDatabase } = require("bun:sqlite") as {
-  Database: CountDatabaseConstructor;
-};
 
 function requiredEnv(name: string, value: string | undefined): string {
   if (value === undefined || value.trim().length === 0) {
@@ -230,35 +217,6 @@ function getBunRuntime(): BunRuntime {
   return runtime.Bun;
 }
 
-function countExistingOrphanedRuns(dbPath: string): number | undefined {
-  if (dbPath === ":memory:") {
-    return undefined;
-  }
-
-  let db: CountDatabase | undefined;
-
-  try {
-    db = new ReadonlyDatabase(resolve(process.cwd(), dbPath), { readonly: true });
-    const runsTable = db
-      .query<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'runs'")
-      .get();
-    if (runsTable == null) {
-      return 0;
-    }
-
-    const row = db
-      .query<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM runs WHERE status = 'running' OR status = 'queued'",
-      )
-      .get();
-    return Number(row?.count ?? 0);
-  } catch {
-    return undefined;
-  } finally {
-    db?.close();
-  }
-}
-
 const serverEnv = readServerEnv(process.env);
 const cfg = await loadConfig(serverEnv.configPath);
 const logger = createLogger({ level: serverEnv.logLevel, logFile: serverEnv.logFile });
@@ -274,7 +232,6 @@ cleanup.register(async () => {
   }
   resolveShutdown();
 });
-const preInitOrphanCount = countExistingOrphanedRuns(serverEnv.dbPath);
 const db = createDbModule(serverEnv.dbPath, { logger });
 
 db.initDb();
@@ -294,12 +251,6 @@ logger.debug(
     parentModel: cfg.models.parent,
   },
   "loaded server config",
-);
-
-const orphanResync = db.resyncOrphanedRuns();
-logger.info(
-  { aborted: orphanResync.aborted || preInitOrphanCount || 0 },
-  "resynced orphaned runs",
 );
 
 await seedDefaultPrompts({ db, logger });
@@ -361,7 +312,33 @@ const runQueue = createRunQueueModule({ db, executor, logger, runEvents });
 cleanup.register(async () => {
   await runQueue.stop({ force: false });
 });
-runQueue.start();
+
+const staleRunReaperConfig = parseStaleRunReaperConfigFromEnv(process.env);
+const staleRunReaper = createStaleRunReaper({
+  anthropicClient,
+  cancelRun: async (runId) => {
+    const wasActive = runQueue.getActiveRunId() === runId;
+    const cancelled = await runQueue.cancel(runId);
+    if (cancelled) {
+      return "cancelled";
+    }
+
+    return wasActive ? "timed_out" : "not_active";
+  },
+  config: staleRunReaperConfig,
+  db,
+  logger,
+  runEvents,
+});
+cleanup.register(async () => {
+  await staleRunReaper.stop();
+});
+
+// Snapshot running rows with persisted Managed Agents sessions before queue
+// orphan resync. These runs are excluded from queue aborts so the reaper can
+// attempt remote delete-first recovery after the HTTP server is already live.
+const startupCandidates = staleRunReaper.snapshotRunningCandidates();
+runQueue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 
 // The polled repositories list is now owned by the WebUI (`polled_repositories`
 // table). The poller is always started; if the table is empty the cycle is a
@@ -438,5 +415,9 @@ cleanup.register(async () => {
 });
 
 process.stdout.write(`Listening on http://${serverEnv.host}:${serverEnv.port}\n`);
+
+// Remote stale-session recovery can block on Managed Agents API calls; start it
+// only after Bun.serve has bound the port so dashboard/API startup stays fast.
+staleRunReaper.start({ startupCandidates });
 
 await shutdownPromise;

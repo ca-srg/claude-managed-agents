@@ -28,6 +28,7 @@ export type CreateOrUpdatePROptions = {
   head: string;
   owner: string;
   repo: string;
+  signal?: AbortSignal;
   title: string;
 };
 
@@ -131,6 +132,12 @@ function formatPRResponse(pr: PR, updated: boolean): CreateOrUpdatePRResult {
   };
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("create_final_pr aborted");
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
@@ -173,11 +180,15 @@ export async function resolveDefaultBranch(
   octokit: GitHubRequestClient,
   owner: string,
   repo: string,
+  signal?: AbortSignal,
 ): Promise<string> {
+  throwIfAborted(signal);
   const response = await octokit.request<{ default_branch?: string }>("GET /repos/{owner}/{repo}", {
     owner,
+    ...(signal ? { request: { signal } } : {}),
     repo,
   });
+  throwIfAborted(signal);
   const defaultBranch = response.data.default_branch;
 
   if (!defaultBranch) {
@@ -192,14 +203,18 @@ export async function findPRByHead(
   owner: string,
   repo: string,
   head: string,
+  signal?: AbortSignal,
 ): Promise<PR | null> {
+  throwIfAborted(signal);
   const response = await octokit.request<PR[]>("GET /repos/{owner}/{repo}/pulls", {
     head: normalizeHeadFilter(owner, head),
     owner,
     per_page: 1,
+    ...(signal ? { request: { signal } } : {}),
     repo,
     state: "open",
   });
+  throwIfAborted(signal);
 
   return response.data[0] ?? null;
 }
@@ -271,10 +286,17 @@ export async function createOrUpdatePR(
   octokit: GitHubRequestClient,
   options: CreateOrUpdatePROptions,
 ): Promise<CreateOrUpdatePRResult> {
-  const existingPR = await findPRByHead(octokit, options.owner, options.repo, options.head);
+  const existingPR = await findPRByHead(
+    octokit,
+    options.owner,
+    options.repo,
+    options.head,
+    options.signal,
+  );
   const prBody = options.body;
 
   if (existingPR) {
+    throwIfAborted(options.signal);
     const updateResponse = await octokit.request<PR>(
       "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
       {
@@ -291,9 +313,11 @@ export async function createOrUpdatePR(
   }
 
   const baseBranch =
-    options.base ?? (await resolveDefaultBranch(octokit, options.owner, options.repo));
+    options.base ??
+    (await resolveDefaultBranch(octokit, options.owner, options.repo, options.signal));
 
   try {
+    throwIfAborted(options.signal);
     const createResponse = await octokit.request<PR>("POST /repos/{owner}/{repo}/pulls", {
       base: baseBranch,
       body: prBody,
