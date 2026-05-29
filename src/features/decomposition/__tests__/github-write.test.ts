@@ -18,10 +18,12 @@ type RequestCall = {
 
 type RequestOutcome =
   | {
+      after?: () => void;
       data: unknown;
       kind: "resolve";
     }
   | {
+      after?: () => void;
       error: Error;
       kind: "reject";
     };
@@ -121,9 +123,11 @@ function createMockOctokit(
       }
 
       if (nextOutcome.kind === "reject") {
+        nextOutcome.after?.();
         throw nextOutcome.error;
       }
 
+      nextOutcome.after?.();
       return { data: nextOutcome.data };
     },
     requestCalls,
@@ -258,6 +262,47 @@ describe("github decomposition write", () => {
           /\/repos\/acme\/widgets\/issues\/\d+$/.test(requestCall.url),
       ),
     ).toBe(false);
+  });
+
+  test("createSubIssue closes the orphan issue when the signal aborts after creation", async () => {
+    const abortController = new AbortController();
+    const createdIssue = buildIssue({ id: 701, number: 72, title: "Child issue" });
+    const octokit = createMockOctokit({
+      requestOutcomes: [
+        {
+          after: () => abortController.abort(),
+          data: createdIssue,
+          kind: "resolve",
+        },
+        { error: new Error("link aborted"), kind: "reject" },
+        { data: buildIssue({ number: 72, state: "closed" }), kind: "resolve" },
+      ],
+    });
+
+    await expect(
+      createSubIssue(octokit, {
+        assignees: [],
+        existingSubIssues: [],
+        labels: [],
+        maxCap: 5,
+        owner: "acme",
+        parentId: 101,
+        parentN: 12,
+        repo: "widgets",
+        signal: abortController.signal,
+        task: taskA,
+      }),
+    ).rejects.toThrow("link aborted");
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(octokit.requestCalls).toHaveLength(3);
+    expect(octokit.requestCalls[1]?.method).toBe("POST");
+    expect(octokit.requestCalls[1]?.url).toBe("/repos/acme/widgets/issues/12/sub_issues");
+    expect(octokit.requestCalls[2]).toEqual({
+      body: { state: "closed", state_reason: "not_planned" },
+      method: "PATCH",
+      url: "/repos/acme/widgets/issues/72",
+    });
   });
 
   test("createSubIssue enforces the configured max sub-issue cap", async () => {

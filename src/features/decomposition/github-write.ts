@@ -133,14 +133,11 @@ export async function closeOrphanIssue(
   repo: string,
   issueNumber: number,
   logger?: Pick<Logger, "warn">,
-  signal?: AbortSignal,
 ): Promise<void> {
-  throwIfAborted(signal);
   try {
     await octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
       issue_number: issueNumber,
       owner,
-      ...(signal ? { request: { signal } } : {}),
       repo,
       state: "closed",
       state_reason: "not_planned",
@@ -210,7 +207,6 @@ export async function createSubIssue(
     `created sub-issue for #${options.parentN}`,
   );
 
-  throwIfAborted(options.signal);
   try {
     await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues", {
       issue_number: options.parentN,
@@ -235,7 +231,6 @@ export async function createSubIssue(
       options.repo,
       createdIssue.number,
       options.logger,
-      options.signal,
     );
     throw error;
   }

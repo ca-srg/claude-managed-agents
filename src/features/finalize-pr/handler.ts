@@ -204,7 +204,6 @@ export async function handleCreateFinalPr(
       signal: ctx.signal,
       title: parsedInput.data.title,
     });
-    throwIfAborted(ctx.signal);
 
     const output = CreateFinalPrOutput.safeParse({
       prNumber: prResult.prNumber,
@@ -220,7 +219,6 @@ export async function handleCreateFinalPr(
       );
     }
 
-    throwIfAborted(ctx.signal);
     return output.data;
   } catch (thrownValue) {
     return buildFailure(

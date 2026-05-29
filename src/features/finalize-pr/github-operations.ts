@@ -309,7 +309,6 @@ export async function createOrUpdatePR(
         title: options.title,
       },
     );
-    throwIfAborted(options.signal);
 
     return formatPRResponse(updateResponse.data, true);
   }
@@ -330,7 +329,6 @@ export async function createOrUpdatePR(
       repo: options.repo,
       title: options.title,
     });
-    throwIfAborted(options.signal);
 
     return formatPRResponse(createResponse.data, false);
   } catch (thrownValue) {

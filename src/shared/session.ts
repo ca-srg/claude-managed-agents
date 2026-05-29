@@ -831,6 +831,7 @@ export async function runSession(
           buildToolRecoveryExhaustedPayload(toolUse.name, priorAttempts),
           true,
         );
+        markProcessed(toolUse);
         resolvedAny = true;
         continue;
       }
@@ -841,6 +842,7 @@ export async function runSession(
         "recovering pending custom tool result after requires_action idle",
       );
       await dispatchToolUse(toolUse);
+      markProcessed(toolUse);
       resolvedAny = true;
     }
 

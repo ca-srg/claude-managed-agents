@@ -5,6 +5,7 @@ import { buildPRBody, createOrUpdatePR, type resolveDefaultBranch } from "../git
 type GitHubClient = Parameters<typeof resolveDefaultBranch>[0];
 
 type MockApiResponse = {
+  after?: () => void;
   data: unknown;
   status?: number;
 };
@@ -63,6 +64,7 @@ class MockOctokit implements GitHubClient {
       throw nextResponse;
     }
 
+    nextResponse.after?.();
     return {
       data: nextResponse.data as TResponse,
       status: nextResponse.status ?? 200,
@@ -239,6 +241,72 @@ describe("createOrUpdatePR", () => {
     expect(mockOctokit.calls[1]?.body?.base).toBe("release");
     expect(mockOctokit.calls[1]?.body?.body).toBe("Updated body");
     expect(mockOctokit.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
+  test("returns the update result when the signal aborts after the PATCH succeeds", async () => {
+    const abortController = new AbortController();
+    const mockOctokit = new MockOctokit();
+    mockOctokit.enqueue("GET /repos/{owner}/{repo}/pulls", {
+      data: [createPullRequestPayload({ body: "Old body", number: 21, title: "Old title" })],
+    });
+    mockOctokit.enqueue("PATCH /repos/{owner}/{repo}/pulls/{pull_number}", {
+      after: () => abortController.abort(),
+      data: createPullRequestPayload({
+        html_url: "https://github.com/acme/widgets/pull/21",
+        number: 21,
+        title: "Updated title",
+      }),
+    });
+
+    const prOutcome = await createOrUpdatePR(mockOctokit, {
+      base: "release",
+      body: "Updated body",
+      head: "feature/task-21",
+      owner: "acme",
+      repo: "widgets",
+      signal: abortController.signal,
+      title: "Updated title",
+    });
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(prOutcome).toEqual({
+      prNumber: 21,
+      prUrl: "https://github.com/acme/widgets/pull/21",
+      updated: true,
+    });
+  });
+
+  test("returns the create result when the signal aborts after the POST succeeds", async () => {
+    const abortController = new AbortController();
+    const mockOctokit = new MockOctokit();
+    mockOctokit.enqueue("GET /repos/{owner}/{repo}/pulls", { data: [] });
+    mockOctokit.enqueue("GET /repos/{owner}/{repo}", {
+      data: { default_branch: "main" },
+    });
+    mockOctokit.enqueue("POST /repos/{owner}/{repo}/pulls", {
+      after: () => abortController.abort(),
+      data: createPullRequestPayload({
+        html_url: "https://github.com/acme/widgets/pull/22",
+        number: 22,
+      }),
+      status: 201,
+    });
+
+    const prOutcome = await createOrUpdatePR(mockOctokit, {
+      body: "Summary",
+      head: "feature/task-22",
+      owner: "acme",
+      repo: "widgets",
+      signal: abortController.signal,
+      title: "Add PR service",
+    });
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(prOutcome).toEqual({
+      prNumber: 22,
+      prUrl: "https://github.com/acme/widgets/pull/22",
+      updated: false,
+    });
   });
 
   test("defaults to draft=false (ready for review) when draft is omitted for new pull requests", async () => {

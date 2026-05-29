@@ -852,6 +852,41 @@ describe("runSession", () => {
     expect(sessionResult.idleReached).toBe(true);
   });
 
+  test("recovered custom tool use is marked processed before a later replay", async () => {
+    let finalPrCalls = 0;
+    const finalPrToolUse = createCustomToolUseEvent("evt-final-replay-once", "create_final_pr", {
+      title: "Ready",
+    });
+    const { calls, client } = createFakeSessionClient({
+      listScripts: [[finalPrToolUse], [finalPrToolUse, createIdleEvent("evt-idle-replay-done")]],
+      streamScripts: [
+        [
+          createRunningEvent("evt-run-replay-once"),
+          createRequiresActionIdleEvent("evt-idle-replay-once", ["evt-final-replay-once"]),
+        ],
+        [],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      sessionId: "sesn-recovered-replay-once",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.listCalls).toHaveLength(2);
+    expect(sessionResult.toolInvocations).toBe(1);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
   test("requires_action idle after an in-stream tool result reopens without redispatch", async () => {
     let finalPrCalls = 0;
     const finalPrToolUse = createCustomToolUseEvent("evt-final-current", "create_final_pr", {
