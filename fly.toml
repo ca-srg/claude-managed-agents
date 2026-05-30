@@ -27,14 +27,14 @@ primary_region = 'nrt'
 # waits for Connected. Requires a "Service Auth" device-enrollment policy for
 # the token. See docs/deploy-fly.md. start.sh skips WARP when these are unset.
 #   fly secrets set CF_WARP_ORGANIZATION=<team-name> \
-#     CF_ACCESS_CLIENT_ID=<id>.access CF_ACCESS_CLIENT_SECRET=<secret>
+#     CF_WARP_ACCESS_CLIENT_ID=<id>.access CF_WARP_ACCESS_CLIENT_SECRET=<secret>
 #
 # Public-hostname routing (e.g. app.example.com -> :3000,
 # mcp.example.com -> :8097) is configured in the Cloudflare Zero Trust
 # dashboard under Tunnels -> Public Hostnames.
 
 [env]
-  DB_PATH = '/data/dashboard.db'
+  DB_PATH = '/data/app/dashboard.db'
   HOST = '127.0.0.1'
   LOG_LEVEL = 'info'
   MCP_PROXY_ALLOW_ORIGIN = '*'

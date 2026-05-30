@@ -25,21 +25,22 @@ Cloudflare Tunnel as the only public ingress.
     │
     ▼
 [ Fly Machine (nrt) ]
+  ├─ warp-svc + /var/lib/cloudflare-warp/mdm.xml (optional Zero Trust device)
   ├─ cloudflared tunnel run --token $CLOUDFLARE_TUNNEL_TOKEN
   ├─ bun run index.ts            (Hono SSR + run queue + SSE)   127.0.0.1:3000
   ├─ mcp-gateway (Bearer auth reverse proxy)                    127.0.0.1:8097
-  ├─ mcp-proxy --named-server-config /etc/mcp-proxy/...         127.0.0.1:8096
-  └─ /data volume → SQLite + agent state
+  ├─ mcp-proxy --named-server-config /data/mcp-proxy.json       127.0.0.1:8096
+  └─ /data volume → /data/app (SQLite + agent state), /data/cloudflare-warp (WARP state)
 ```
 
 The repo ships these supporting files:
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Multi-stage build: deps → Tailwind CSS → runtime (incl. mcp-proxy venv + Node.js for `npx`-based MCP servers + cloudflared deb) |
+| `Dockerfile` | Multi-stage build: deps → Tailwind CSS → runtime (incl. mcp-proxy venv + Node.js for `npx`-based MCP servers + cloudflare-warp + cloudflared deb) |
 | `mcp-proxy.json` | `--named-server-config` template, baked into the image at `/etc/mcp-proxy/mcp-proxy.json` |
 | `src/features/mcp-gateway/server.ts` | Bearer-auth reverse proxy that fronts `mcp-proxy` so Cloudflare Tunnel does not expose the raw MCP endpoint |
-| `scripts/start.sh` | Spawns `bun`, `mcp-proxy`, `mcp-gateway`, and `cloudflared` in parallel, propagates signals, exits when any of them dies |
+| `scripts/start.sh` | Optionally enrolls WARP from runtime-generated `mdm.xml`, then spawns `bun`, `mcp-proxy`, `mcp-gateway`, and `cloudflared`, propagates signals, exits when any of them dies |
 | `fly.toml` | Single-machine config, `/data` volume, **no public services** (Tunnel-only) |
 | `.dockerignore` | Strips local state and tests from build context |
 
@@ -47,6 +48,8 @@ The repo ships these supporting files:
 
 - A Fly.io account + `flyctl` installed (`brew install flyctl` / curl install)
 - A Cloudflare account with a Zone (a domain) onboarded to Cloudflare
+- Optional for WARP: a Cloudflare Zero Trust team name and Access Service Token
+  allowed by a **Service Auth** device-enrollment policy
 - Anthropic API key and a GitHub App with `Metadata: read`,
   `Contents: write`, `Issues: write`, and `Pull requests: write`
 
@@ -153,6 +156,68 @@ controlled at the edge. Keep Cloudflare Tunnel as the only public ingress so
 that header comes from a trusted proxy. If Anthropic updates the range, set
 `MCP_GATEWAY_ALLOWED_CLIENT_CIDRS` to a comma-separated CIDR list and redeploy.
 
+## 1.6. Optional: join Cloudflare Zero Trust with WARP mdm.xml
+
+If the Fly Machine must make outbound requests to Access-protected private
+resources, enroll it as a managed Cloudflare WARP device. The image includes
+`cloudflare-warp`; `scripts/start.sh` enables it only when all three runtime
+secrets below are present:
+
+- `CF_WARP_ORGANIZATION` — Zero Trust team name only (not
+  `<team>.cloudflareaccess.com`)
+- `CF_WARP_ACCESS_CLIENT_ID` — the Service Token Client ID used in the
+  `CF-Access-Client-Id` header
+- `CF_WARP_ACCESS_CLIENT_SECRET` — the Service Token Client Secret used in the
+  `CF-Access-Client-Secret` header
+
+For backward compatibility with existing Fly secrets, `CF_ACCESS_CLIENT_ID` and
+`CF_ACCESS_CLIENT_SECRET` are accepted as fallback names when the
+`CF_WARP_ACCESS_*` names are unset. Prefer the WARP-prefixed names for new
+deployments; the legacy names are treated as WARP enrollment secrets when used
+as fallback and are removed from the environment before mcp-proxy starts.
+
+Cloudflare setup:
+
+1. Create a Zero Trust **Service Token**.
+2. Add a device-enrollment policy with action **Service Auth** and include that
+   token. An `Allow` policy is not enough for headless WARP enrollment.
+3. Store the token values as Fly secrets; do not commit them:
+
+   ```bash
+   fly secrets set --app gh-issue-agent \
+     CF_WARP_ORGANIZATION='your-team-name' \
+     CF_WARP_ACCESS_CLIENT_ID='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.access' \
+     CF_WARP_ACCESS_CLIENT_SECRET='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+   ```
+
+At boot, `start.sh` writes `/var/lib/cloudflare-warp/mdm.xml` with
+`auth_client_id`, `auth_client_secret`, `auto_connect=1`, `onboarding=false`,
+`organization`, and `service_mode=warp`, then starts `warp-svc` before the app
+and waits for `warp-cli status` to report `Connected`.
+
+WARP registration state is persisted at `/data/cloudflare-warp` and symlinked to
+`/var/lib/cloudflare-warp`, so Machine restarts do not create duplicate Zero
+Trust devices. The app, mcp-proxy, MCP gateway, and cloudflared still run as the
+unprivileged `bun` user; only `start.sh`/`warp-svc` need root for
+`/dev/net/tun`, routing, and the MDM file. After enrollment, `start.sh` unsets
+the WARP token variables before launching mcp-proxy so `--pass-environment` does
+not forward them to MCP subprocesses. Treat `/data/cloudflare-warp/mdm.xml` and
+volume backups as secret material; the service token secret is stored there so
+WARP can re-enroll after restarts or token rotation.
+
+Optional tuning:
+
+```bash
+fly secrets set --app gh-issue-agent \
+  CF_WARP_SERVICE_MODE='warp' \
+  CF_WARP_CONNECT_TIMEOUT_SECONDS='90'
+```
+
+Leave the required `CF_WARP_ORGANIZATION` / `CF_WARP_ACCESS_CLIENT_*` variables
+unset to skip WARP. Existing `CF_ACCESS_CLIENT_*` secrets count as fallback WARP
+credentials. If any one of the required three is set without the others,
+startup fails loudly instead of booting with a half-configured network.
+
 ## 2. Set Fly secrets
 
 `CLOUDFLARE_TUNNEL_TOKEN` and `MCP_GATEWAY_TOKEN` are **required** —
@@ -162,7 +227,8 @@ be unreachable, or the MCP endpoint would be exposed without auth).
 Generate a random gateway token (e.g. `openssl rand -hex 32`) and store
 it as a secret. Any MCP server-specific secrets (e.g. `FIGMA_API_KEY`)
 go here too so `--pass-environment` can forward them to the spawned
-stdio MCP servers.
+stdio MCP servers. Add the WARP secrets from step 1.6 only if this Machine
+should join Zero Trust as a managed device.
 
 ```bash
 fly secrets set --app gh-issue-agent \
@@ -171,6 +237,9 @@ fly secrets set --app gh-issue-agent \
   GITHUB_APP_PRIVATE_KEY="$(cat path/to/private-key.pem)" \
   CLOUDFLARE_TUNNEL_TOKEN='eyJh...' \
   MCP_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
+  CF_WARP_ORGANIZATION='your-team-name' \
+  CF_WARP_ACCESS_CLIENT_ID='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.access' \
+  CF_WARP_ACCESS_CLIENT_SECRET='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' \
   FIGMA_API_KEY='figd_...'   # if you enabled the figma MCP server
 ```
 
@@ -214,6 +283,7 @@ fly deploy --app gh-issue-agent
 
 Watch the logs for:
 
+- `[start.sh] Cloudflare WARP connected` if WARP is configured
 - `[start.sh] bun server started`
 - `[start.sh] mcp-proxy started`
 - `[start.sh] MCP gateway started`
@@ -240,7 +310,7 @@ fly ssh console --app gh-issue-agent
 fly ssh console --app gh-issue-agent -C 'df -h /data'
 
 # Backup the SQLite db locally
-fly ssh sftp get /data/dashboard.db ./dashboard.db.bak --app gh-issue-agent
+fly ssh sftp get /data/app/dashboard.db ./dashboard.db.bak --app gh-issue-agent
 
 # Re-deploy after code changes
 fly deploy --app gh-issue-agent
@@ -252,6 +322,19 @@ fly deploy --app gh-issue-agent
   → The required secret is missing. `fly secrets set CLOUDFLARE_TUNNEL_TOKEN=...`
     and re-deploy. The Machine intentionally exits because it has no
     other way to receive public traffic.
+
+- **`Cloudflare WARP is partially configured` in logs**
+  → Set `CF_WARP_ORGANIZATION` plus `CF_WARP_ACCESS_CLIENT_ID` /
+    `CF_WARP_ACCESS_CLIENT_SECRET` (or the legacy fallback names
+    `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`), or unset all of them to
+    skip WARP.
+
+- **`timed out waiting for Cloudflare WARP to connect` in logs**
+  → Verify the Zero Trust team name, Service Token values, and the
+    device-enrollment policy action (**Service Auth**). Inside the Machine,
+    inspect `warp-cli status` and confirm `/var/lib/cloudflare-warp/mdm.xml`
+    and `/dev/net/tun` exist. Do not paste the MDM file into tickets or logs;
+    it contains the service token secret.
 
 - **Cloudflare hostname returns `Error 1033` / `1016`**
   → The tunnel has no healthy connector. Tail `fly logs --app gh-issue-agent`
@@ -272,7 +355,7 @@ fly deploy --app gh-issue-agent
     `fly.toml` and `fly deploy` again.
 
 - **Run lock complaint after a crash**
-  → `fly ssh console --app gh-issue-agent -C 'rm /data/agent-state/run.lock.lock'`.
+  → `fly ssh console --app gh-issue-agent -C 'rm /data/app/agent-state/run.lock.lock'`.
 
 - **`HOST` should be `127.0.0.1`**
   → With Tunnel-only ingress the app intentionally binds to `127.0.0.1`
@@ -283,7 +366,7 @@ fly deploy --app gh-issue-agent
 - **mcp-proxy returns `404` on `/servers/<name>/mcp`**
   → The server name doesn't match a key in `mcp-proxy.json`. URL-encode
     spaces (`%20`). Verify the running config inside the machine:
-    `fly ssh console --app gh-issue-agent -C 'cat /etc/mcp-proxy/mcp-proxy.json'`.
+    `fly ssh console --app gh-issue-agent -C 'cat /data/mcp-proxy.json'`.
 
 - **mcp-proxy fails to spawn an `npx`-based server**
   → Check logs with `fly logs --app gh-issue-agent | grep mcp-proxy`.
