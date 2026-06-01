@@ -291,6 +291,32 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
   };
 }
 
+function instrumentSessionSends(
+  anthropicClient: NonNullable<RunExecutionDeps["anthropicClient"]>,
+  order: string[],
+) {
+  const originalSend = anthropicClient.beta.sessions.events.send;
+  anthropicClient.beta.sessions.events.send = async (sessionId, params) => {
+    order.push(`send:${params.events[0]?.type ?? "unknown"}`);
+    return originalSend(sessionId, params);
+  };
+}
+
+function instrumentRunStatuses(deps: RunExecutionDeps, order: string[]) {
+  const db = deps.db;
+  if (db === undefined) {
+    throw new Error("expected mock DB");
+  }
+
+  deps.db = {
+    ...db,
+    setRunStatus: (runId, status) => {
+      order.push(`status:${status}`);
+      db.setRunStatus(runId, status);
+    },
+  };
+}
+
 describe("runIssueOrchestration", () => {
   test("dry-run returns decompositionPlan without calling Anthropic", async () => {
     const runEvents = createRunEventsSpy();
@@ -409,6 +435,10 @@ describe("runIssueOrchestration", () => {
     expect(harness.db.runs.at(0)?.sessionIds).toEqual([]);
     expect(harness.db.runs.some((run) => run.sessionIds.includes("sess-1"))).toBe(true);
     expect(harness.db.runs.some((run) => run.subIssues[0]?.taskId === "task-1")).toBe(true);
+    expect(harness.db.runs.at(-1)?.branch).toBe("agent/issue-42/fix-login-flow");
+    expect(harness.db.runs.at(-1)?.origin).toEqual(
+      expect.objectContaining({ title: "Fix login flow" }),
+    );
     expect(harness.db.runs.at(-1)?.prUrl).toBe("https://github.com/owner/name/pull/12");
     expect(harness.db.sessionPlaceholders.map((entry) => entry.sessionId)).toEqual(["sess-1"]);
     expect(harness.db.sessions.map((entry) => entry.session.sessionId)).toEqual(["sess-1"]);
@@ -608,11 +638,18 @@ describe("runIssueOrchestration", () => {
   });
 
   test("credential setup failure releases the run lock before creating sessions", async () => {
+    const writes: RunState[] = [];
+    const order: string[] = [];
     const harness = createHarness({
       ensureMcpCredentials: (async () => {
+        order.push("ensureMcpCredentials");
         harness.callLog.push("ensureMcpCredentials");
         throw new Error("credential setup failed");
       }) as RunExecutionDeps["ensureMcpCredentials"],
+      writeRunState: async (_runId, state) => {
+        order.push(`write:${state.vaultId ?? "none"}`);
+        writes.push(structuredClone(state));
+      },
     });
 
     const result = await runIssueOrchestration(
@@ -624,6 +661,9 @@ describe("runIssueOrchestration", () => {
     expect(result.errored?.message).toBe("credential setup failed");
     expect(harness.fakeAnthropic.calls.creates).toEqual([]);
     expect(harness.callLog).toContain("releaseRunLock");
+    expect(writes.at(0)?.vaultId).toBe("vault-1");
+    expect(harness.db.runs.at(0)?.vaultId).toBe("vault-1");
+    expect(order.indexOf("write:vault-1") < order.indexOf("ensureMcpCredentials")).toBe(true);
   });
 
   test("configured vault can reuse MCP credentials without local token env", async () => {
@@ -973,12 +1013,18 @@ describe("runIssueOrchestration", () => {
   });
 
   test("mid-session failure releases the run lock without deleting the session", async () => {
+    const order: string[] = [];
     const harness = createHarness({
       runSession: (async () => {
         harness.callLog.push("runSession");
         throw new Error("session failed");
       }) as RunExecutionDeps["runSession"],
     });
+    if (!harness.deps.anthropicClient) {
+      throw new Error("expected fake Anthropic client");
+    }
+    instrumentSessionSends(harness.deps.anthropicClient, order);
+    instrumentRunStatuses(harness.deps, order);
 
     const result = await runIssueOrchestration(
       { dryRun: false, issue: 42, repo: "owner/name", runId: "run-session-fail" },
@@ -991,6 +1037,42 @@ describe("runIssueOrchestration", () => {
     expect(result.status).toBe("failed");
     expect(releaseOrder).toEqual(["runSession", "releaseRunLock"]);
     expect(harness.fakeAnthropic.calls.deletes).toEqual([]);
+    expect(harness.fakeAnthropic.calls.sends.map((call) => call.params.events[0]?.type)).toEqual([
+      "user.message",
+      "user.interrupt",
+    ]);
+    expect(order.indexOf("send:user.interrupt") < order.lastIndexOf("status:failed")).toBe(true);
+  });
+
+  test("timed out sessions are interrupted before marking the run failed", async () => {
+    const order: string[] = [];
+    const harness = createHarness({
+      runSession: (async (_client, options) =>
+        buildSessionResult({
+          idleReached: false,
+          sessionId: options.sessionId,
+          timedOut: true,
+        })) as RunExecutionDeps["runSession"],
+    });
+    if (!harness.deps.anthropicClient) {
+      throw new Error("expected fake Anthropic client");
+    }
+    instrumentSessionSends(harness.deps.anthropicClient, order);
+    instrumentRunStatuses(harness.deps, order);
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-session-timeout" },
+      harness.deps,
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.timedOut).toBe(true);
+    expect(result.errored?.type).toBe("timeout");
+    expect(harness.fakeAnthropic.calls.sends.map((call) => call.params.events[0]?.type)).toEqual([
+      "user.message",
+      "user.interrupt",
+    ]);
+    expect(order.indexOf("send:user.interrupt") < order.lastIndexOf("status:failed")).toBe(true);
   });
 
   test("SQLite insertRun failures do not abort a successful run", async () => {
@@ -1080,6 +1162,7 @@ describe("runIssueOrchestration", () => {
   test("AbortSignal firing mid-run returns aborted status", async () => {
     const abortController = new AbortController();
     const runSessionStarted = createDeferred<void>();
+    const order: string[] = [];
     const harness = createHarness({
       runSession: (async (_client, options) => {
         runSessionStarted.resolve();
@@ -1095,6 +1178,11 @@ describe("runIssueOrchestration", () => {
       }) as RunExecutionDeps["runSession"],
       signal: abortController.signal,
     });
+    if (!harness.deps.anthropicClient) {
+      throw new Error("expected fake Anthropic client");
+    }
+    instrumentSessionSends(harness.deps.anthropicClient, order);
+    instrumentRunStatuses(harness.deps, order);
 
     const runPromise = runIssueOrchestration(
       { dryRun: false, issue: 42, repo: "owner/name", runId: "run-abort" },
@@ -1108,6 +1196,11 @@ describe("runIssueOrchestration", () => {
     expect(result.aborted).toBe(true);
     expect(result.status).toBe("aborted");
     expect(harness.db.statuses.at(-1)).toEqual({ runId: "run-abort", status: "aborted" });
+    expect(harness.fakeAnthropic.calls.sends.map((call) => call.params.events[0]?.type)).toEqual([
+      "user.message",
+      "user.interrupt",
+    ]);
+    expect(order.indexOf("send:user.interrupt") < order.lastIndexOf("status:aborted")).toBe(true);
   });
 
   test("preflight failure returns failed result instead of throwing", async () => {

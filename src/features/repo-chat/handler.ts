@@ -92,6 +92,16 @@ export type RepositoryChatTurnResult = {
   sessionId: string;
 };
 
+export class RepositoryChatSessionError extends Error {
+  readonly sessionId: string;
+
+  constructor(message: string, sessionId: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RepositoryChatSessionError";
+    this.sessionId = sessionId;
+  }
+}
+
 export type RepositoryChatDeps = {
   anthropicClient: RepositoryChatAnthropicClient;
   config: Config;
@@ -347,6 +357,10 @@ function extractAgentMessageText(event: BetaManagedAgentsSessionEvent): string |
   return text.length > 0 ? text : null;
 }
 
+function repoChatSessionFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Managed Agents chat failed";
+}
+
 async function readLatestAssistantMessage(
   client: RepositoryChatAnthropicClient,
   sessionId: string,
@@ -391,35 +405,45 @@ export async function runRepositoryChatTurn(
   });
   const sessionId = session.id;
 
-  await deps.anthropicClient.beta.sessions.events.send(sessionId, {
-    events: [
-      {
-        content: [{ text: buildTurnPrompt(input), type: "text" }],
-        type: "user.message",
-      },
-    ],
-  });
+  try {
+    await deps.anthropicClient.beta.sessions.events.send(sessionId, {
+      events: [
+        {
+          content: [{ text: buildTurnPrompt(input), type: "text" }],
+          type: "user.message",
+        },
+      ],
+    });
 
-  const result = await deps.runSession(deps.anthropicClient, {
-    handlers: {},
-    logger,
-    model: deps.config.models.child,
-    sessionId,
-    timeouts: { maxWallClockMs: deps.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS },
-  });
+    const result = await deps.runSession(deps.anthropicClient, {
+      handlers: {},
+      logger,
+      model: deps.config.models.child,
+      sessionId,
+      timeouts: { maxWallClockMs: deps.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS },
+    });
 
-  if (result.errored) {
-    throw new Error("Managed Agents chat session errored before completing a response");
+    if (result.errored) {
+      throw new Error("Managed Agents chat session errored before completing a response");
+    }
+
+    if (result.timedOut) {
+      throw new Error("Managed Agents chat session timed out before completing a response");
+    }
+
+    const content = await readLatestAssistantMessage(deps.anthropicClient, sessionId);
+    if (content === null) {
+      throw new Error("Managed Agents chat session completed without an assistant message");
+    }
+
+    return { content, sessionId };
+  } catch (error) {
+    if (error instanceof RepositoryChatSessionError) {
+      throw error;
+    }
+
+    throw new RepositoryChatSessionError(repoChatSessionFailureMessage(error), sessionId, {
+      cause: error,
+    });
   }
-
-  if (result.timedOut) {
-    throw new Error("Managed Agents chat session timed out before completing a response");
-  }
-
-  const content = await readLatestAssistantMessage(deps.anthropicClient, sessionId);
-  if (content === null) {
-    throw new Error("Managed Agents chat session completed without an assistant message");
-  }
-
-  return { content, sessionId };
 }

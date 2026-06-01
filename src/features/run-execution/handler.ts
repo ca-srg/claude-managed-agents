@@ -688,6 +688,8 @@ export async function runIssueOrchestration(
   let externalAbortListener: (() => void) | undefined;
   let runLockAcquired = false;
   let stopGitHubAppTokenRefresh: (() => void) | undefined;
+  let parentSessionId: string | undefined;
+  let parentSessionInterruptAttempted = false;
 
   const safeSetRunStatus = (status: RunStatus): void => {
     currentStatus = status;
@@ -759,6 +761,43 @@ export async function runIssueOrchestration(
         observer: "onSession",
         sessionId: event.sessionId,
       });
+    }
+  };
+
+  const interruptParentSession = async (reason: string): Promise<void> => {
+    const sessionId = parentSessionId;
+    const anthropicClient = deps.anthropicClient;
+    if (!sessionId || !anthropicClient || parentSessionInterruptAttempted) {
+      return;
+    }
+
+    parentSessionInterruptAttempted = true;
+    try {
+      await anthropicClient.beta.sessions.events.send(sessionId, {
+        events: [{ type: "user.interrupt" }],
+      });
+      notifySession({ kind: "interrupt_sent", payload: { reason }, sessionId });
+      notifyLog(logger, activeObservers, "info", "interrupted remote Managed Agents session", {
+        reason,
+        sessionId,
+      });
+    } catch (error) {
+      notifySession({
+        kind: "interrupt_failed",
+        payload: { message: errorMessageFromUnknown(error), reason },
+        sessionId,
+      });
+      notifyLog(
+        logger,
+        activeObservers,
+        "warn",
+        "failed to interrupt remote Managed Agents session",
+        {
+          err: error,
+          reason,
+          sessionId,
+        },
+      );
     }
   };
 
@@ -1000,6 +1039,20 @@ export async function runIssueOrchestration(
     });
     const managedVault = vault.managedByUs;
 
+    const provisionalBranchTitle = originShortDisplay(origin);
+    runState = {
+      branch: `agent/${originBranchSegment(origin)}/${slug(provisionalBranchTitle)}`,
+      issueNumber: origin.type === "github_issue" ? origin.issueNumber : null,
+      origin,
+      repo: `${owner}/${repoName}`,
+      runId: fallbackRunId,
+      sessionIds: [],
+      startedAt: new Date().toISOString(),
+      subIssues: [],
+      vaultId: vault.vaultId,
+    };
+    await writeAndSyncRunState();
+
     // Resolve env-backed bearer tokens for enabled MCP servers when needed,
     // then ensure one Vault credential per `mcp_server_url`. Configured vaults
     // may already contain matching credentials, so token env vars are optional
@@ -1051,15 +1104,10 @@ export async function runIssueOrchestration(
     throwIfAborted(sessionController.signal);
 
     runState = {
+      ...(runState as RunState),
       branch,
       issueNumber: origin.type === "github_issue" ? origin.issueNumber : null,
       origin,
-      repo: `${owner}/${repoName}`,
-      runId: fallbackRunId,
-      sessionIds: [],
-      startedAt: new Date().toISOString(),
-      subIssues: [],
-      vaultId: vault.vaultId,
     };
 
     safeSetRunStatus("running");
@@ -1080,6 +1128,7 @@ export async function runIssueOrchestration(
       ],
       vault_ids: [vault.vaultId],
     });
+    parentSessionId = parentSession.id;
     notifySession({ kind: "created", payload: { role: "parent" }, sessionId: parentSession.id });
     runState.sessionIds = [...runState.sessionIds, parentSession.id];
     await writeAndSyncRunState();
@@ -1278,6 +1327,7 @@ export async function runIssueOrchestration(
     }
 
     if (sessionController.signal.aborted || sessionResult.aborted) {
+      await interruptParentSession("aborted");
       notifyPhase("aborted");
       safeSetRunStatus("aborted");
       return {
@@ -1293,6 +1343,7 @@ export async function runIssueOrchestration(
     }
 
     if (sessionResult.timedOut) {
+      await interruptParentSession("timed_out");
       throw new RunExecutionFailure("timeout", "Session timed out before completion");
     }
 
@@ -1315,6 +1366,8 @@ export async function runIssueOrchestration(
     const wasAborted = error instanceof RunExecutionAborted || sessionController.signal.aborted;
     const errored = categorizeError(error);
     const status: RunStatus = wasAborted ? "aborted" : "failed";
+
+    await interruptParentSession(wasAborted ? "aborted" : "failed");
 
     if (wasAborted) {
       notifyPhase("aborted");

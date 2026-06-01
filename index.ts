@@ -340,7 +340,7 @@ cleanup.register(async () => {
 
 // Snapshot running rows with persisted Managed Agents sessions before queue
 // orphan resync. These runs are excluded from queue aborts so the reaper can
-// attempt remote delete-first recovery after the HTTP server is already live.
+// attempt remote stop/archive confirmation after the HTTP server is already live.
 const startupCandidates = staleRunReaper.snapshotRunningCandidates();
 runQueue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 

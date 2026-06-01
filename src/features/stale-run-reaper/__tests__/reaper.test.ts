@@ -19,11 +19,13 @@ import type { RunState, RunStatus } from "@/shared/types";
 type DbModule = ReturnType<typeof createDbModule>;
 
 type FakeClientCalls = {
+  archives: Array<{ sessionId: string }>;
   listCalls: Array<{ params?: EventListParams; sessionId: string }>;
   sends: Array<{ params: EventSendParams; sessionId: string }>;
 };
 
 type FakeClientOptions = {
+  onArchive?: (sessionId: string, calls: FakeClientCalls) => PromiseLike<unknown> | unknown;
   onList?: (
     sessionId: string,
     params: EventListParams | undefined,
@@ -158,13 +160,21 @@ function createFakeClient(
   calls: FakeClientCalls;
   client: Parameters<typeof createStaleRunReaper>[0]["anthropicClient"];
 } {
-  const calls: FakeClientCalls = { listCalls: [], sends: [] };
+  const calls: FakeClientCalls = { archives: [], listCalls: [], sends: [] };
 
   return {
     calls,
     client: {
       beta: {
         sessions: {
+          async archive(sessionId: string) {
+            calls.archives.push({ sessionId });
+            const archiveOutcome = options.onArchive?.(sessionId, calls);
+            if (archiveOutcome !== undefined) {
+              return await archiveOutcome;
+            }
+            return { ok: true };
+          },
           events: {
             list(sessionId: string, params?: EventListParams) {
               calls.listCalls.push({ params, sessionId });
@@ -256,6 +266,7 @@ describe("createStaleRunReaper", () => {
 
     expect(calls.sends).toHaveLength(1);
     expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
     expect(
       calls.sends.some((send) =>
         send.params.events.some((event) => event.type === "user.custom_tool_result"),
@@ -300,6 +311,7 @@ describe("createStaleRunReaper", () => {
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(1);
     expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toHaveLength(0);
     expect(
       calls.sends.some((send) =>
         send.params.events.some((event) => event.type === "user.custom_tool_result"),
@@ -311,7 +323,38 @@ describe("createStaleRunReaper", () => {
     expect(terminalEvents).toHaveLength(0);
   });
 
-  test("treats interrupt not found as a successful stale session recovery", async () => {
+  test("defers recovery when stale session archive confirmation fails", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-archive-fails");
+    const { calls, db, reaper } = createHarness(
+      [
+        createRequiresActionIdleEvent("evt-idle-archive-fails", [toolUse.id], OLD_PROCESSED_AT),
+        toolUse,
+      ],
+      {
+        onArchive: () => {
+          throw new Error("archive failed");
+        },
+      },
+    );
+
+    const summary = await reaper.reapOnce();
+
+    expect(summary).toMatchObject({ recovered: 0, skipped: 1, staleRequiresAction: 1 });
+    expect(getDbStatus(db)).toBe("running");
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toEqual([
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+    ]);
+    const terminalEvents = db
+      .listRunEvents({ limit: 20, runId: RUN_ID })
+      .filter((event) => event.kind === "complete" || event.kind === "error");
+    expect(terminalEvents).toHaveLength(0);
+  });
+
+  test("treats interrupt not found with archive confirmation as stale session recovery", async () => {
     const toolUse = createCustomToolUseEvent("evt-tool-interrupt-not-found");
     const { calls, db, reaper } = createHarness(
       [
@@ -336,6 +379,31 @@ describe("createStaleRunReaper", () => {
     expect(summary).toMatchObject({ recovered: 1, skipped: 0, staleRequiresAction: 1 });
     expect(getDbStatus(db)).toBe("failed");
     expect(calls.sends).toHaveLength(1);
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
+  });
+
+  test("treats archive not found as successful stale session recovery", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-archive-not-found");
+    const { calls, db, reaper } = createHarness(
+      [
+        createRequiresActionIdleEvent("evt-idle-archive-not-found", [toolUse.id], OLD_PROCESSED_AT),
+        toolUse,
+      ],
+      {
+        onArchive: () => {
+          throw createNotFoundError();
+        },
+      },
+    );
+
+    const summary = await reaper.reapOnce({
+      candidates: [{ runId: RUN_ID, sessionIds: [SESSION_ID] }],
+    });
+
+    expect(summary).toMatchObject({ recovered: 1, skipped: 0, staleRequiresAction: 1 });
+    expect(getDbStatus(db)).toBe("failed");
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
   });
 
   test("interruptSession returns ok when interrupt reports not found", async () => {
@@ -358,6 +426,7 @@ describe("createStaleRunReaper", () => {
 
     expect(result).toEqual({ ok: true });
     expect(calls.sends).toHaveLength(1);
+    expect(calls.archives).toHaveLength(0);
   });
 
   test("leaves fresh requires_action runs alone", async () => {

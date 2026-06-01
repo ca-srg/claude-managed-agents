@@ -19,6 +19,7 @@ type StaleRunReaperRunEvents = Pick<ReturnType<typeof createRunEventsModule>, "e
 export type StaleRunReaperSessionClient = {
   beta: {
     sessions: {
+      archive(sessionId: string): PromiseLike<unknown>;
       events: {
         list(
           sessionId: string,
@@ -120,12 +121,22 @@ type StaleRequiresActionSession = {
 const STALE_REQUIRES_ACTION_ERROR_TYPE = "stale_requires_action";
 const REAPER_COMPONENT = "stale-run-reaper";
 const REAPER_REMOTE_CALL_TIMEOUT_MS = 30_000;
+const REAPER_SESSION_ARCHIVE_RETRY_DELAYS_MS = [0, 1_000, 3_000] as const;
 
 type RemoteCallResult<T> =
   | { ok: true; value: T }
   | { error: unknown; ok: false; reason: "aborted" | "error" | "timeout" };
 
 type InterruptSessionResult = { ok: true } | { error: unknown; ok: false; stage: "interrupt" };
+type ConfirmSessionStoppedResult =
+  | { confirmation: "archived" | "not_found"; ok: true }
+  | {
+      attempts?: number;
+      error: unknown;
+      ok: false;
+      reason?: "aborted" | "error" | "timeout";
+      stage: "archive" | "interrupt";
+    };
 
 function parseBooleanEnv(name: string, value: string | undefined): boolean | undefined {
   const rawValue = value?.trim().toLowerCase();
@@ -474,7 +485,7 @@ export async function interruptSession(input: {
     if (isAnthropicNotFoundError(interruptResult.error)) {
       input.logger?.debug(
         { runId: input.runId, sessionId: input.sessionId },
-        "stale session not found during interrupt; treating as already stopped",
+        "stale session not found during interrupt",
       );
       return { ok: true };
     }
@@ -492,6 +503,108 @@ export async function interruptSession(input: {
   }
 
   return { ok: true };
+}
+
+async function archiveSessionWithRetry(input: {
+  client: StaleRunReaperSessionClient;
+  logger: Logger | undefined;
+  runId: string;
+  sessionId: string;
+  signal: AbortSignal;
+  sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+}): Promise<ConfirmSessionStoppedResult> {
+  let lastFailure: Extract<ConfirmSessionStoppedResult, { ok: false }> | undefined;
+
+  for (
+    let attemptIndex = 0;
+    attemptIndex < REAPER_SESSION_ARCHIVE_RETRY_DELAYS_MS.length;
+    attemptIndex += 1
+  ) {
+    const delayMs = REAPER_SESSION_ARCHIVE_RETRY_DELAYS_MS[attemptIndex];
+    if (delayMs === undefined) {
+      break;
+    }
+
+    if (delayMs > 0) {
+      await input.sleep(delayMs, input.signal);
+    }
+
+    if (input.signal.aborted) {
+      return {
+        attempts: attemptIndex + 1,
+        error: remoteCallError("sessions.archive aborted"),
+        ok: false,
+        reason: "aborted",
+        stage: "archive",
+      };
+    }
+
+    const archiveResult = await runRemoteCall({
+      context: { attempt: attemptIndex + 1, runId: input.runId, sessionId: input.sessionId },
+      logger: input.logger,
+      operation: "sessions.archive",
+      promise: Promise.resolve().then(() => input.client.beta.sessions.archive(input.sessionId)),
+      signal: input.signal,
+    });
+
+    if (archiveResult.ok) {
+      return { confirmation: "archived", ok: true };
+    }
+
+    if (isAnthropicNotFoundError(archiveResult.error)) {
+      input.logger?.debug(
+        { attempt: attemptIndex + 1, runId: input.runId, sessionId: input.sessionId },
+        "stale session not found during archive; treating as already stopped",
+      );
+      return { confirmation: "not_found", ok: true };
+    }
+
+    lastFailure = {
+      attempts: attemptIndex + 1,
+      error: archiveResult.error,
+      ok: false,
+      reason: archiveResult.reason,
+      stage: "archive",
+    };
+
+    if (attemptIndex < REAPER_SESSION_ARCHIVE_RETRY_DELAYS_MS.length - 1) {
+      input.logger?.warn(
+        {
+          attempt: attemptIndex + 1,
+          err: archiveResult.error,
+          reason: archiveResult.reason,
+          runId: input.runId,
+          sessionId: input.sessionId,
+        },
+        "failed to archive stale session; retrying",
+      );
+    }
+  }
+
+  return (
+    lastFailure ?? {
+      attempts: 0,
+      error: remoteCallError("sessions.archive did not run"),
+      ok: false,
+      stage: "archive",
+    }
+  );
+}
+
+async function confirmSessionStoppedAfterInterrupt(input: {
+  client: StaleRunReaperSessionClient;
+  logger: Logger | undefined;
+  runId: string;
+  sessionId: string;
+  signal: AbortSignal;
+  sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+}): Promise<ConfirmSessionStoppedResult> {
+  const interruptResult = await interruptSession(input);
+  if (!interruptResult.ok) {
+    return interruptResult;
+  }
+
+  return archiveSessionWithRetry(input);
 }
 
 function safeEmit(
@@ -688,23 +801,26 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       return "skipped";
     }
 
-    const interruptResult = await interruptSession({
+    const stopConfirmation = await confirmSessionStoppedAfterInterrupt({
       client: deps.anthropicClient,
       logger: deps.logger,
       runId,
       sessionId: staleSession.sessionId,
       signal,
+      sleep,
     });
-    if (!interruptResult.ok) {
+    if (!stopConfirmation.ok) {
       deps.logger?.warn(
         {
-          err: interruptResult.error,
+          attempts: stopConfirmation.attempts,
+          err: stopConfirmation.error,
+          reason: stopConfirmation.reason,
           runId,
           sessionId: staleSession.sessionId,
-          stage: interruptResult.stage,
+          stage: stopConfirmation.stage,
           staleForMs: staleSession.staleForMs,
         },
-        "stale session interrupt did not complete; deferring run terminalization",
+        "stale session stop confirmation did not complete; deferring run terminalization",
       );
       return "deferred";
     }
@@ -714,7 +830,12 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
     }
 
     deps.logger?.warn(
-      { runId, sessionId: staleSession.sessionId, staleForMs: staleSession.staleForMs },
+      {
+        confirmation: stopConfirmation.confirmation,
+        runId,
+        sessionId: staleSession.sessionId,
+        staleForMs: staleSession.staleForMs,
+      },
       "recovered stale requires_action run",
     );
     return "recovered";
