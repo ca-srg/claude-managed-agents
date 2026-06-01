@@ -8,6 +8,8 @@ import type {
 import type {
   SkillCreateParams,
   SkillCreateResponse,
+  SkillListParams,
+  SkillListResponse,
 } from "@anthropic-ai/sdk/resources/beta/skills/skills";
 import type {
   VersionCreateParams,
@@ -69,6 +71,7 @@ export type RegistryAnthropicClient = {
     };
     skills: {
       create(params: SkillCreateParams): PromiseLike<SkillCreateResponse>;
+      list(params?: SkillListParams | null | undefined): AsyncIterable<SkillListResponse>;
       versions: {
         create(skillId: string, params: VersionCreateParams): PromiseLike<VersionCreateResponse>;
       };
@@ -217,6 +220,71 @@ function buildCoordinatorRoster(
   };
 }
 
+type ExistingGitHubOperationsSkill = Pick<
+  SkillListResponse,
+  "display_title" | "id" | "latest_version"
+>;
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") {
+      return message;
+    }
+  }
+
+  return String(error);
+}
+
+function isDuplicateDisplayTitleError(error: unknown): boolean {
+  const message = readErrorMessage(error).toLowerCase();
+
+  return (
+    message.includes("display_title") &&
+    (message.includes("reuse") || message.includes("duplicate") || message.includes("already"))
+  );
+}
+
+async function findGitHubOperationsSystemSkill(
+  client: RegistryAnthropicClient,
+): Promise<ExistingGitHubOperationsSkill | null> {
+  for await (const skill of client.beta.skills.list({ source: "custom", limit: 100 })) {
+    if (skill.display_title === GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE) {
+      return skill;
+    }
+  }
+
+  return null;
+}
+
+async function createGitHubOperationsSkillVersion(
+  client: RegistryAnthropicClient,
+  skillId: string,
+  files: NonNullable<SkillCreateParams["files"]>,
+): Promise<string> {
+  const createdVersion = await client.beta.skills.versions.create(skillId, {
+    files,
+  });
+
+  if (typeof createdVersion.version !== "string" || createdVersion.version.length === 0) {
+    throw new Error("GitHub operations skill version was created without a version");
+  }
+
+  return createdVersion.version;
+}
+
+function readCreatedSkillVersion(createdSkill: SkillCreateResponse): string {
+  if (typeof createdSkill.latest_version !== "string" || createdSkill.latest_version.length === 0) {
+    throw new Error("GitHub operations skill was created without a latest version");
+  }
+
+  return createdSkill.latest_version;
+}
+
 async function ensureGitHubOperationsSystemSkill(
   client: RegistryAnthropicClient,
   store: AgentRegistryStateStore,
@@ -234,25 +302,39 @@ async function ensureGitHubOperationsSystemSkill(
   const files = await buildGitHubOperationsSkillFiles();
   const createdAt = existingState?.createdAt ?? new Date().toISOString();
   let skillId: string;
-  let skillVersion: string | null;
+  let skillVersion: string;
 
   if (existingState === null) {
-    const createdSkill = await client.beta.skills.create({
-      display_title: GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
-      files,
-    });
-    skillId = createdSkill.id;
-    skillVersion = createdSkill.latest_version;
-  } else {
-    const createdVersion = await client.beta.skills.versions.create(existingState.skillId, {
-      files,
-    });
-    skillId = existingState.skillId;
-    skillVersion = createdVersion.version;
-  }
+    const existingSkill = await findGitHubOperationsSystemSkill(client);
 
-  if (typeof skillVersion !== "string" || skillVersion.length === 0) {
-    throw new Error("GitHub operations skill was created without a latest version");
+    if (existingSkill !== null) {
+      skillId = existingSkill.id;
+      skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
+    } else {
+      try {
+        const createdSkill = await client.beta.skills.create({
+          display_title: GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
+          files,
+        });
+        skillId = createdSkill.id;
+        skillVersion = readCreatedSkillVersion(createdSkill);
+      } catch (error) {
+        if (!isDuplicateDisplayTitleError(error)) {
+          throw error;
+        }
+
+        const racedSkill = await findGitHubOperationsSystemSkill(client);
+        if (racedSkill === null) {
+          throw error;
+        }
+
+        skillId = racedSkill.id;
+        skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
+      }
+    }
+  } else {
+    skillId = existingState.skillId;
+    skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
   }
 
   await store.writeSystemSkillState({

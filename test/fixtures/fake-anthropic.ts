@@ -2,7 +2,12 @@ import type {
   AgentCreateParams,
   AgentUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
-import type { SkillCreateParams, SkillCreateResponse } from "@anthropic-ai/sdk/resources/beta/skills/skills";
+import type {
+  SkillCreateParams,
+  SkillCreateResponse,
+  SkillListParams,
+  SkillListResponse,
+} from "@anthropic-ai/sdk/resources/beta/skills/skills";
 import type {
   VersionCreateParams,
   VersionCreateResponse,
@@ -19,6 +24,7 @@ export type RegistryAnthropicClient = {
     };
     skills: {
       create(params: SkillCreateParams): PromiseLike<SkillCreateResponse>;
+      list(params?: SkillListParams | null | undefined): AsyncIterable<SkillListResponse>;
       versions: {
         create(skillId: string, params: VersionCreateParams): PromiseLike<VersionCreateResponse>;
       };
@@ -29,6 +35,7 @@ export type RegistryAnthropicClient = {
 export type FakeClientCalls = {
   creates: Array<{ params: AgentCreateParams; role: "parent" | "child" }>;
   skillCreates: Array<{ params: SkillCreateParams }>;
+  skillLists: Array<{ params: SkillListParams | null | undefined }>;
   skillVersionCreates: Array<{ params: VersionCreateParams; skillId: string }>;
   updates: Array<{
     agentId: string;
@@ -40,6 +47,9 @@ export type FakeClientCalls = {
 type CreateOverride = {
   createResponse?: (role: "parent" | "child") => { id: string; version: number };
   skillCreateResponse?: (params: SkillCreateParams) => SkillCreateResponse;
+  skillListResponse?: (
+    params: SkillListParams | null | undefined,
+  ) => Iterable<SkillListResponse> | AsyncIterable<SkillListResponse>;
   skillVersionCreateResponse?: (skillId: string, params: VersionCreateParams) => VersionCreateResponse;
 };
 
@@ -81,6 +91,16 @@ function inferRoleFromAgentId(
   throw new Error(`Unknown agent id: ${agentId}`);
 }
 
+function toAsyncIterable<T>(items: Iterable<T> | AsyncIterable<T>): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for await (const item of items) {
+        yield item;
+      }
+    },
+  };
+}
+
 export function createFakeAnthropic(overrides: CreateOverride = {}): {
   client: RegistryAnthropicClient;
   calls: FakeClientCalls;
@@ -88,6 +108,7 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
   const calls: FakeClientCalls = {
     creates: [],
     skillCreates: [],
+    skillLists: [],
     skillVersionCreates: [],
     updates: [],
   };
@@ -151,6 +172,11 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
               updated_at: "2026-06-01T00:00:00.000Z",
             } satisfies SkillCreateResponse)
           );
+        },
+        list(params) {
+          calls.skillLists.push({ params });
+
+          return toAsyncIterable(overrides.skillListResponse?.(params) ?? []);
         },
         versions: {
           async create(skillId, params) {

@@ -2,11 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SkillListResponse } from "@anthropic-ai/sdk/resources/beta/skills/skills";
 
 import type { Config } from "@/shared/config";
 import { createDbModule } from "@/shared/persistence/db";
 import { createFakeAnthropic } from "../../../../test/fixtures/fake-anthropic";
-import { GITHUB_OPERATIONS_SKILL_KEY, hashGitHubOperationsSkill } from "../github-operations-skill";
+import {
+  GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
+  GITHUB_OPERATIONS_SKILL_KEY,
+  hashGitHubOperationsSkill,
+} from "../github-operations-skill";
 import {
   createDatabaseAgentRegistryStateStore,
   createRegistry,
@@ -93,6 +98,21 @@ function readPersistedState(db: TestDbModule) {
   }
 
   return state;
+}
+
+function createListedGitHubOperationsSkill(
+  overrides: Partial<SkillListResponse> = {},
+): SkillListResponse {
+  return {
+    created_at: "2026-05-31T00:00:00.000Z",
+    display_title: GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
+    id: "skill_remote_github_ops",
+    latest_version: "1600000000000000",
+    source: "custom",
+    type: "skill",
+    updated_at: "2026-05-31T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function announceScenario(title: string): void {
@@ -182,6 +202,94 @@ describe("agent registry", () => {
             parentAgentId: firstResult.parentAgentId,
             childAgentId: firstResult.childAgentId,
             definitionHash: firstResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
+  test("system skill adoption: DB empty but remote skill exists", async () => {
+    const directoryPath = createTempDir();
+
+    try {
+      await withWorkingDirectory(directoryPath, async () => {
+        const { client, calls } = createFakeAnthropic({
+          skillListResponse: () => [createListedGitHubOperationsSkill()],
+        });
+        const harness = createRegistryHarness();
+
+        try {
+          await harness.ensureAgents(client, createEnsureAgentsOptions());
+
+          expect(calls.skillLists).toHaveLength(1);
+          expect(calls.skillLists[0]?.params).toMatchObject({ source: "custom", limit: 100 });
+          expect(calls.skillCreates).toHaveLength(0);
+          expect(calls.skillVersionCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates[0]?.skillId).toBe("skill_remote_github_ops");
+          expect(calls.creates[0]?.params.skills).toEqual([
+            {
+              skill_id: "skill_remote_github_ops",
+              type: "custom",
+              version: "1700000000000011",
+            },
+          ]);
+          expect(harness.db.getSystemSkillState(GITHUB_OPERATIONS_SKILL_KEY)).toMatchObject({
+            contentHash: hashGitHubOperationsSkill(),
+            key: GITHUB_OPERATIONS_SKILL_KEY,
+            skillId: "skill_remote_github_ops",
+            skillVersion: "1700000000000011",
+          });
+        } finally {
+          harness.close();
+        }
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
+  test("system skill adoption: create duplicate error falls back to remote skill", async () => {
+    const directoryPath = createTempDir();
+
+    try {
+      await withWorkingDirectory(directoryPath, async () => {
+        let skillListCount = 0;
+        const { client, calls } = createFakeAnthropic({
+          skillCreateResponse: () => {
+            throw new Error(
+              `Skill cannot reuse an existing display_title: ${GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE}`,
+            );
+          },
+          skillListResponse: () => {
+            skillListCount += 1;
+            return skillListCount === 1 ? [] : [createListedGitHubOperationsSkill()];
+          },
+        });
+        const harness = createRegistryHarness();
+
+        try {
+          await harness.ensureAgents(client, createEnsureAgentsOptions());
+
+          expect(calls.skillLists).toHaveLength(2);
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates[0]?.skillId).toBe("skill_remote_github_ops");
+          expect(calls.creates[0]?.params.skills).toEqual([
+            {
+              skill_id: "skill_remote_github_ops",
+              type: "custom",
+              version: "1700000000000011",
+            },
+          ]);
+          expect(harness.db.getSystemSkillState(GITHUB_OPERATIONS_SKILL_KEY)).toMatchObject({
+            contentHash: hashGitHubOperationsSkill(),
+            key: GITHUB_OPERATIONS_SKILL_KEY,
+            skillId: "skill_remote_github_ops",
+            skillVersion: "1700000000000011",
           });
         } finally {
           harness.close();
