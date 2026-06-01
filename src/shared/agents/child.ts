@@ -14,6 +14,14 @@ void MAX_THINKING_BUDGET_DEFERRED;
 
 const AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   type: AGENT_TOOLSET_VERSION,
+  // Custom/system skills are validated against the built-in read tool; keep it explicit.
+  configs: [
+    {
+      name: "read",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+  ],
 };
 
 const CHILD_METADATA = {

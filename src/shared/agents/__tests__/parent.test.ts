@@ -90,7 +90,7 @@ describe("buildParentDefinition", () => {
     });
   });
 
-  test("forwards the supplied custom tools and includes the github MCP toolset", () => {
+  test("forwards custom tools and includes the github MCP and read toolsets", () => {
     const parentDefinition: AgentCreateParams = buildParentDefinition(
       TEST_CONFIG,
       { parent: "x" },
@@ -109,7 +109,22 @@ describe("buildParentDefinition", () => {
     );
     const customToolNames = new Set(customTools.map((toolEntry) => toolEntry.name));
 
-    expect(agentToolsets).toHaveLength(0);
+    expect(agentToolsets).toEqual([
+      {
+        configs: [
+          {
+            enabled: true,
+            name: "read",
+            permission_policy: { type: "always_allow" },
+          },
+        ],
+        default_config: {
+          enabled: false,
+          permission_policy: { type: "always_allow" },
+        },
+        type: "agent_toolset_20260401",
+      },
+    ]);
     expect(customTools).toHaveLength(TEST_CUSTOM_TOOLS.length);
     expect(customToolNames.size).toBe(TEST_CUSTOM_TOOLS.length);
     for (const expectedTool of TEST_CUSTOM_TOOLS) {

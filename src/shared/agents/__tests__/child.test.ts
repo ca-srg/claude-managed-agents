@@ -80,6 +80,15 @@ describe("buildChildDefinition", () => {
     const customTools = childTools.filter((toolEntry) => toolEntry.type === "custom");
 
     expect(agentToolsets).toHaveLength(1);
+    expect(agentToolsets[0]).toMatchObject({
+      configs: [
+        {
+          enabled: true,
+          name: "read",
+          permission_policy: { type: "always_allow" },
+        },
+      ],
+    });
     expect(githubMcpTools).toHaveLength(1);
     expect(customTools).toHaveLength(0);
   });

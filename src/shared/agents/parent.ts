@@ -1,5 +1,6 @@
 import type {
   AgentCreateParams,
+  BetaManagedAgentsAgentToolset20260401Params,
   BetaManagedAgentsCustomToolInputSchema,
   BetaManagedAgentsCustomToolParams,
   BetaManagedAgentsSkillParams,
@@ -7,7 +8,11 @@ import type {
 
 import { toEnabledMcpServerParams, toEnabledMcpToolsetParams } from "@/shared/agents/mcp";
 import type { Config } from "@/shared/config";
-import { MAX_THINKING_BUDGET_DEFERRED, PARENT_AGENT_NAME } from "@/shared/constants";
+import {
+  AGENT_TOOLSET_VERSION,
+  MAX_THINKING_BUDGET_DEFERRED,
+  PARENT_AGENT_NAME,
+} from "@/shared/constants";
 import type { McpServer } from "@/shared/persistence/db";
 import type { CustomToolDefinition } from "@/shared/tool-schema-core";
 
@@ -66,6 +71,22 @@ export type ParentMultiagentRoster = NonNullable<AgentCreateParams["multiagent"]
 /** Tool entries that appear on the parent regardless of MCP configuration. */
 export type ParentCustomTools = ReadonlyArray<BetaManagedAgentsCustomToolParams>;
 
+const SKILL_READ_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
+  type: AGENT_TOOLSET_VERSION,
+  // Skills require the built-in read tool at session creation; keep the parent otherwise read-only.
+  default_config: {
+    enabled: false,
+    permission_policy: { type: "always_allow" },
+  },
+  configs: [
+    {
+      name: "read",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+  ],
+};
+
 /**
  * Build the parent (coordinator) agent definition.
  *
@@ -103,7 +124,7 @@ export function buildParentDefinition(
     system: prompts.parent,
     skills: [...systemSkills],
     mcp_servers: mcpServerParams,
-    tools: [...mcpToolsetParams, ...customTools],
+    tools: [SKILL_READ_AGENT_TOOLSET, ...mcpToolsetParams, ...customTools],
     metadata: PARENT_METADATA,
     multiagent,
   };
