@@ -126,9 +126,6 @@ function createFakeRepositoryChatClient(opts: {
         async create() {
           return { id: sessionId };
         },
-        async delete() {
-          return { ok: true };
-        },
         events: {
           list() {
             return asyncIterableOf([
@@ -462,7 +459,6 @@ describe("createApp", () => {
         }),
         ensureMcpCredentials: async () => [],
         ensureVault: async () => ({ managedByUs: false, vaultId: "vault-repo-chat" }),
-        releaseVault: async () => {},
         runSession: async () => {
           runSessionCalls += 1;
           return createSessionResult({ sessionId: chatSessionId });

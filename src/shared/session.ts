@@ -780,7 +780,7 @@ export async function runSession(
 
       if (outcome === ABORTED_ITERATION) {
         handlerController.abort();
-        // Session is aborting; cleanup will interrupt/delete. Skip the send.
+        // Session is aborting; skip sending a tool result after cancellation.
         return;
       }
 

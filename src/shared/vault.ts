@@ -38,17 +38,6 @@ export type EnsuredMcpCredential = {
   mcpServerUrl: string;
 };
 
-export type ReleaseVaultCredential = {
-  credentialId: string;
-  managed: boolean;
-};
-
-export type ReleaseVaultContext = {
-  credentials: ReadonlyArray<ReleaseVaultCredential>;
-  managedVault: boolean;
-  vaultId: string;
-};
-
 export type UpdateMcpCredentialTokenContext = {
   credentialId: string;
   token: string;
@@ -64,7 +53,6 @@ type VaultClient = {
 type VaultsApi = {
   create: (params: { display_name: string }) => Promise<Pick<BetaManagedAgentsVault, "id">>;
   credentials?: CredentialsApi;
-  delete: (vaultId: string) => Promise<unknown>;
   retrieve: (vaultId: string) => Promise<Pick<BetaManagedAgentsVault, "id">>;
 };
 
@@ -73,7 +61,6 @@ type CredentialsApi = {
     vaultId: string,
     params: CredentialCreateParams,
   ) => Promise<Pick<BetaManagedAgentsCredential, "id">>;
-  delete: (credentialId: string, params: { vault_id: string }) => Promise<unknown>;
   list: (vaultId: string) => AsyncIterable<BetaManagedAgentsCredential>;
   update?: (
     credentialId: string,
@@ -92,14 +79,6 @@ export class VaultApiUnavailable extends Error {
     );
     this.name = "VaultApiUnavailable";
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return isRecord(error) && error.status === 404;
 }
 
 function buildCredentialCreateParams(input: {
@@ -160,18 +139,6 @@ function requireCredentialUpdateApi(
   return credentialsApi.update;
 }
 
-async function swallowNotFound(action: () => Promise<unknown>): Promise<void> {
-  try {
-    await action();
-  } catch (error) {
-    if (isNotFoundError(error)) {
-      return;
-    }
-
-    throw error;
-  }
-}
-
 export function createVaultModule(overrides: Partial<VaultModuleDependencies> = {}) {
   const dependencies: VaultModuleDependencies = {
     logger: createLogger({ level: "silent" }),
@@ -212,9 +179,9 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
    * credential. The bearer token is whatever the caller resolved
    * (typically `process.env[server.tokenEnvName]`).
    *
-   * Credentials we create are tagged `managedByUs: true` so `releaseVault`
-   * can clean them up at run completion. Credentials we reused are tagged
-   * `managedByUs: false` and left in place.
+   * Credentials we create are tagged `managedByUs: true` for callers that need
+   * to distinguish them from reused credentials. Credentials we reused are
+   * tagged `managedByUs: false` and left in place.
    */
   async function ensureMcpCredentials(
     client: VaultClient,
@@ -314,36 +281,6 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
     return ensured;
   }
 
-  async function releaseVault(client: VaultClient, context: ReleaseVaultContext): Promise<void> {
-    const vaultsApi = requireVaultsApi(client);
-    const credentialsApi = requireCredentialsApi(client);
-
-    for (const credential of context.credentials) {
-      if (!credential.managed) {
-        continue;
-      }
-
-      await swallowNotFound(async () => {
-        await credentialsApi.delete(credential.credentialId, { vault_id: context.vaultId });
-      });
-      logger.info(
-        {
-          credentialId: credential.credentialId,
-          managedByUs: true,
-          vaultId: context.vaultId,
-        },
-        "Released managed vault credential",
-      );
-    }
-
-    if (context.managedVault) {
-      await swallowNotFound(async () => {
-        await vaultsApi.delete(context.vaultId);
-      });
-      logger.info({ managedByUs: true, vaultId: context.vaultId }, "Released managed vault");
-    }
-  }
-
   async function updateMcpCredentialToken(
     client: VaultClient,
     context: UpdateMcpCredentialTokenContext,
@@ -376,12 +313,10 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
     ensureMcpCredentials,
     ensureVault,
     flushLogs,
-    releaseVault,
     updateMcpCredentialToken,
   };
 }
 
 const defaultVaultModule = createVaultModule();
 
-export const { ensureMcpCredentials, ensureVault, releaseVault, updateMcpCredentialToken } =
-  defaultVaultModule;
+export const { ensureMcpCredentials, ensureVault, updateMcpCredentialToken } = defaultVaultModule;

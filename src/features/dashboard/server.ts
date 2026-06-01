@@ -107,7 +107,6 @@ import type { RunStatus } from "@/shared/types";
 import {
   ensureMcpCredentials as defaultEnsureMcpCredentials,
   ensureVault as defaultEnsureVault,
-  releaseVault as defaultReleaseVault,
 } from "@/shared/vault";
 
 type DbModule = ReturnType<typeof import("@/shared/persistence/db").createDbModule>;
@@ -260,7 +259,6 @@ export type CreateAppOptions = {
       | "ensureEnvironmentForRepo"
       | "ensureMcpCredentials"
       | "ensureVault"
-      | "releaseVault"
       | "runSession"
       | "timeoutMs"
     >
@@ -505,7 +503,6 @@ function repoChatDepsFromOptions(opts: CreateAppOptions): RepositoryChatDeps | n
     ensureVault: opts.repoChat?.ensureVault ?? defaultEnsureVault,
     githubAuth: opts.githubAuth,
     logger: opts.logger ?? createLogger({ level: "silent" }),
-    releaseVault: opts.repoChat?.releaseVault ?? defaultReleaseVault,
     runSession: opts.repoChat?.runSession ?? defaultRunSession,
     ...(typeof opts.repoChat?.timeoutMs === "number" ? { timeoutMs: opts.repoChat.timeoutMs } : {}),
   };

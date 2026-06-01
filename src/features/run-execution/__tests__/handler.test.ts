@@ -81,24 +81,6 @@ function createToolHandlerContext() {
   return { signal: controller.signal };
 }
 
-function createRunningSessionDeleteError(): Error & {
-  error: { error: { message: string; type: string }; type: string };
-  status: number;
-} {
-  return Object.assign(new Error("Cannot delete session while it is running"), {
-    error: {
-      error: {
-        message:
-          "Cannot delete session while it is running. " +
-          "Send an interrupt event or wait for the session to complete.",
-        type: "invalid_request_error",
-      },
-      type: "error",
-    },
-    status: 400,
-  });
-}
-
 function createMockDb() {
   const calls = {
     phases: [] as Array<{ phase: RunPhase | null; runId: string }>,
@@ -269,9 +251,6 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
     releaseRunLock: async () => {
       callLog.push("releaseRunLock");
     },
-    releaseVault: (async () => {
-      callLog.push("releaseVault");
-    }) as RunExecutionDeps["releaseVault"],
     runPreflight: (async () => {
       callLog.push("runPreflight");
       return {
@@ -628,7 +607,7 @@ describe("runIssueOrchestration", () => {
     expect(sentContent.text).not.toContain("Repository-level context");
   });
 
-  test("credential setup failure releases the vault before creating sessions", async () => {
+  test("credential setup failure releases the run lock before creating sessions", async () => {
     const harness = createHarness({
       ensureMcpCredentials: (async () => {
         harness.callLog.push("ensureMcpCredentials");
@@ -644,38 +623,7 @@ describe("runIssueOrchestration", () => {
     expect(result.status).toBe("failed");
     expect(result.errored?.message).toBe("credential setup failed");
     expect(harness.fakeAnthropic.calls.creates).toEqual([]);
-    expect(harness.callLog).toContain("releaseVault");
-  });
-
-  test("credential setup failure releases credentials created before the failure", async () => {
-    const releaseVaultCalls: Array<Parameters<RunExecutionDeps["releaseVault"]>[1]> = [];
-    const harness = createHarness({
-      ensureMcpCredentials: (async (_client, context) => {
-        harness.callLog.push("ensureMcpCredentials");
-        context.onCredentialEnsured?.({
-          credentialId: "vcrd_partial",
-          managedByUs: true,
-          mcpServerUrl: "https://linear.example.com/mcp/",
-        });
-        throw new Error("credential setup failed");
-      }) as RunExecutionDeps["ensureMcpCredentials"],
-      releaseVault: (async (_client, context) => {
-        harness.callLog.push("releaseVault");
-        releaseVaultCalls.push(structuredClone(context));
-      }) as RunExecutionDeps["releaseVault"],
-    });
-
-    const result = await runIssueOrchestration(
-      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-partial-credential-fail" },
-      harness.deps,
-    );
-
-    expect(result.status).toBe("failed");
-    expect(result.errored?.message).toBe("credential setup failed");
-    expect(releaseVaultCalls).toHaveLength(1);
-    expect(releaseVaultCalls[0]?.credentials).toEqual([
-      { credentialId: "vcrd_partial", managed: true },
-    ]);
+    expect(harness.callLog).toContain("releaseRunLock");
   });
 
   test("configured vault can reuse MCP credentials without local token env", async () => {
@@ -1024,82 +972,25 @@ describe("runIssueOrchestration", () => {
     );
   });
 
-  test("mid-session failure drains cleanup in LIFO order", async () => {
+  test("mid-session failure releases the run lock without deleting the session", async () => {
     const harness = createHarness({
       runSession: (async () => {
         harness.callLog.push("runSession");
         throw new Error("session failed");
       }) as RunExecutionDeps["runSession"],
     });
-    const sessions = harness.deps.anthropicClient?.beta.sessions;
-    if (sessions === undefined) {
-      throw new Error("expected fake Anthropic sessions client");
-    }
-    const deleteSession = sessions.delete.bind(sessions);
-    sessions.delete = (async (sessionId) => {
-      harness.callLog.push("deleteSession");
-      return await deleteSession(sessionId);
-    }) as typeof sessions.delete;
 
     const result = await runIssueOrchestration(
       { dryRun: false, issue: 42, repo: "owner/name", runId: "run-session-fail" },
       harness.deps,
     );
-    const cleanupOrder = harness.callLog.filter((entry) =>
-      ["runSession", "deleteSession", "releaseVault", "releaseRunLock"].includes(entry),
+    const releaseOrder = harness.callLog.filter((entry) =>
+      ["runSession", "releaseRunLock"].includes(entry),
     );
 
     expect(result.status).toBe("failed");
-    expect(cleanupOrder).toEqual(["runSession", "deleteSession", "releaseVault", "releaseRunLock"]);
-  });
-
-  test("cleanup interrupts and retries when session delete sees a running session", async () => {
-    const harness = createHarness({
-      runSession: (async () => {
-        harness.callLog.push("runSession");
-        throw new Error("session failed");
-      }) as RunExecutionDeps["runSession"],
-    });
-    const sessions = harness.deps.anthropicClient?.beta.sessions;
-    if (sessions === undefined) {
-      throw new Error("expected fake Anthropic sessions client");
-    }
-    const deleteSession = sessions.delete.bind(sessions);
-    let deleteAttempts = 0;
-    sessions.delete = (async (sessionId) => {
-      deleteAttempts += 1;
-      harness.callLog.push(`deleteSession:${deleteAttempts}`);
-      if (deleteAttempts === 1) {
-        throw createRunningSessionDeleteError();
-      }
-
-      return await deleteSession(sessionId);
-    }) as typeof sessions.delete;
-
-    const result = await runIssueOrchestration(
-      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-session-delete-running" },
-      harness.deps,
-    );
-    const cleanupOrder = harness.callLog.filter(
-      (entry) =>
-        entry === "runSession" ||
-        entry.startsWith("deleteSession") ||
-        entry === "releaseVault" ||
-        entry === "releaseRunLock",
-    );
-    const interruptSend = harness.fakeAnthropic.calls.sends.find((send) =>
-      send.params.events.some((event) => event.type === "user.interrupt"),
-    );
-
-    expect(result.status).toBe("failed");
-    expect(cleanupOrder).toEqual([
-      "runSession",
-      "deleteSession:1",
-      "deleteSession:2",
-      "releaseVault",
-      "releaseRunLock",
-    ]);
-    expect(interruptSend?.sessionId).toBe("sess-1");
+    expect(releaseOrder).toEqual(["runSession", "releaseRunLock"]);
+    expect(harness.fakeAnthropic.calls.deletes).toEqual([]);
   });
 
   test("SQLite insertRun failures do not abort a successful run", async () => {
@@ -1175,7 +1066,6 @@ describe("runIssueOrchestration", () => {
       "decomposition",
       "child_execution",
       "finalize_pr",
-      "cleanup",
     ]);
     expect(subIssueEvents).toHaveLength(1);
     expect(subIssueEvents[0]?.kind).toBe("created");
@@ -1289,7 +1179,6 @@ describe("runIssueOrchestration", () => {
       expect(result.errored?.message).toBe("vault setup failed");
       expect(harness.callLog).toContain("acquireRunLock");
       expect(harness.callLog).toContain("releaseRunLock");
-      expect(harness.callLog).not.toContain("releaseVault");
       expect(harness.fakeAnthropic.calls.creates).toEqual([]);
       expect(harness.db.statuses.at(-1)).toEqual({
         runId: "run-error-vault",

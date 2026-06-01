@@ -38,7 +38,6 @@ import type {
   ensureMcpCredentials,
   ensureVault,
   ResolvedMcpCredential,
-  releaseVault,
   updateMcpCredentialToken,
 } from "@/shared/vault";
 import { createRunEventsBridge } from "./event-bridge";
@@ -58,7 +57,6 @@ type SessionApiClient = {
         id: string;
         resources?: Array<{ id: string; type: string }>;
       }>;
-      delete: (sessionId: string) => Promise<unknown>;
       events: {
         send: (
           sessionId: string,
@@ -80,7 +78,6 @@ type AnthropicClientLike = Parameters<EnsureAgents>[0] &
   Parameters<typeof ensureEnvironmentForRepo>[0] &
   Parameters<typeof ensureVault>[0] &
   Parameters<typeof ensureMcpCredentials>[0] &
-  Parameters<typeof releaseVault>[0] &
   NonNullable<Parameters<typeof runPreflight>[0]["anthropicClient"]> &
   Parameters<typeof runSession>[0] &
   SessionApiClient;
@@ -105,13 +102,6 @@ export type RunExecutionDb = Pick<
   | "setRunStatus"
 >;
 
-type CleanupHandler = () => Promise<void> | void;
-
-export type RunExecutionCleanup = {
-  register(fn: CleanupHandler): void;
-  triggerAll(): Promise<void>;
-};
-
 export type RunExecutionObservers = {
   onLog?: (level: "info" | "warn" | "error", msg: string, fields?: Record<string, unknown>) => void;
   onPhase?: (phase: RunPhase, details?: unknown) => void;
@@ -124,7 +114,6 @@ export type RunExecutionDeps = {
   anthropicClient?: AnthropicClientLike;
   buildChildPrompt: typeof buildChildPrompt;
   buildParentPrompt: typeof buildParentPrompt;
-  cleanup?: RunExecutionCleanup;
   db?: RunExecutionDb;
   ensureAgents: EnsureAgents;
   ensureEnvironment: typeof ensureEnvironment;
@@ -151,7 +140,6 @@ export type RunExecutionDeps = {
   parentCustomTools: ParentCustomTools;
   readIssue: typeof readIssue;
   releaseRunLock: typeof releaseRunLock;
-  releaseVault: typeof releaseVault;
   runPreflight: typeof runPreflight;
   runEvents?: RunEventsModule;
   runSession: typeof runSession;
@@ -184,9 +172,6 @@ type SubIssueObserverPayload = {
   title?: string;
 };
 
-const RUNNING_SESSION_DELETE_MESSAGE = "Cannot delete session while it is running";
-const SESSION_DELETE_RETRY_DELAYS_MS = [0, 1_000, 3_000] as const;
-
 class RunExecutionFailure extends Error {
   readonly type: string;
 
@@ -202,43 +187,6 @@ class RunExecutionAborted extends Error {
     super("Run orchestration was aborted");
     this.name = "RunExecutionAborted";
   }
-}
-
-function createLocalCleanup(): RunExecutionCleanup {
-  const cleanupHandlers: CleanupHandler[] = [];
-  let triggerPromise: Promise<void> | undefined;
-
-  return {
-    register(fn) {
-      cleanupHandlers.push(fn);
-    },
-    triggerAll() {
-      triggerPromise ??= (async () => {
-        const cleanupErrors: unknown[] = [];
-
-        while (cleanupHandlers.length > 0) {
-          const cleanupHandler = cleanupHandlers.pop();
-          if (cleanupHandler) {
-            try {
-              await cleanupHandler();
-            } catch (error) {
-              cleanupErrors.push(error);
-            }
-          }
-        }
-
-        if (cleanupErrors.length === 1) {
-          throw cleanupErrors[0];
-        }
-
-        if (cleanupErrors.length > 1) {
-          throw new AggregateError(cleanupErrors, "One or more cleanup handlers failed");
-        }
-      })();
-
-      return triggerPromise;
-    },
-  };
 }
 
 function parseRepoRef(repo: string): RepoRef {
@@ -403,7 +351,6 @@ function refreshDelayMs(access: GitHubRepositoryAccess): number | undefined {
 
 function registerGitHubAppTokenRefresh(options: {
   anthropicClient: AnthropicClientLike;
-  cleanup: RunExecutionCleanup;
   credentialIds: () => string[];
   getAccess: () => GitHubRepositoryAccess;
   logger: Logger;
@@ -415,9 +362,9 @@ function registerGitHubAppTokenRefresh(options: {
   updateMcpCredentialToken?: typeof updateMcpCredentialToken;
   vaultId: string;
   githubAuth?: GitHubAuthProvider;
-}): void {
+}): (() => void) | undefined {
   if (!options.githubAuth?.refreshRepositoryAccess) {
-    return;
+    return undefined;
   }
 
   let stopped = false;
@@ -486,12 +433,12 @@ function registerGitHubAppTokenRefresh(options: {
   };
 
   schedule(refreshDelayMs(options.getAccess()));
-  options.cleanup.register(() => {
+  return () => {
     stopped = true;
     if (timer) {
       clearTimeout(timer);
     }
-  });
+  };
 }
 
 function readRepoPromptBody(
@@ -532,81 +479,6 @@ function slug(title: string): string {
 
 function errorMessageFromUnknown(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
-
-function nestedErrorMessage(error: unknown): string | undefined {
-  if (!isRecord(error)) {
-    return undefined;
-  }
-
-  const nestedError = error.error;
-  if (!isRecord(nestedError)) {
-    return undefined;
-  }
-
-  const nestedPayload = nestedError.error;
-  if (!isRecord(nestedPayload)) {
-    return undefined;
-  }
-
-  const message = nestedPayload.message;
-  return typeof message === "string" ? message : undefined;
-}
-
-function isRunningSessionDeleteError(error: unknown): boolean {
-  const status = isRecord(error) ? error.status : undefined;
-  const message = `${errorMessageFromUnknown(error)} ${nestedErrorMessage(error) ?? ""}`;
-
-  return status === 400 && message.includes(RUNNING_SESSION_DELETE_MESSAGE);
-}
-
-async function delay(ms: number): Promise<void> {
-  if (ms <= 0) {
-    return;
-  }
-
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function deleteSessionForCleanup(
-  anthropicClient: AnthropicClientLike,
-  sessionId: string,
-  logger: Logger,
-): Promise<void> {
-  try {
-    await anthropicClient.beta.sessions.delete(sessionId);
-    return;
-  } catch (error) {
-    if (!isRunningSessionDeleteError(error)) {
-      throw error;
-    }
-  }
-
-  logger.warn({ sessionId }, "session still running during cleanup; interrupting before delete");
-  await anthropicClient.beta.sessions.events.send(sessionId, {
-    events: [{ type: "user.interrupt" }],
-  });
-
-  let lastDeleteError: unknown;
-  for (const retryDelayMs of SESSION_DELETE_RETRY_DELAYS_MS) {
-    await delay(retryDelayMs);
-
-    try {
-      await anthropicClient.beta.sessions.delete(sessionId);
-      return;
-    } catch (error) {
-      if (!isRunningSessionDeleteError(error)) {
-        throw error;
-      }
-      lastDeleteError = error;
-    }
-  }
-
-  throw lastDeleteError ?? new Error(RUNNING_SESSION_DELETE_MESSAGE);
 }
 
 function categorizeError(error: unknown): ErrorResult {
@@ -802,7 +674,6 @@ export async function runIssueOrchestration(
       ? rawInput.runId
       : uuidv7();
   const sessionController = new AbortController();
-  const cleanup = deps.cleanup ?? createLocalCleanup();
   const logger = deps.logger.child({ runId: fallbackRunId });
   const bridgeObservers = deps.runEvents
     ? createRunEventsBridge({ logger, runEvents: deps.runEvents, runId: fallbackRunId })
@@ -814,8 +685,9 @@ export async function runIssueOrchestration(
   let currentPhase: RunPhase | undefined;
   let currentStatus: RunStatus = "running";
   let runState: RunState | undefined;
-  let cleanupStarted = false;
   let externalAbortListener: (() => void) | undefined;
+  let runLockAcquired = false;
+  let stopGitHubAppTokenRefresh: (() => void) | undefined;
 
   const safeSetRunStatus = (status: RunStatus): void => {
     currentStatus = status;
@@ -895,20 +767,6 @@ export async function runIssueOrchestration(
       safeObserverCall(logger, () => activeObservers.onSubIssue?.(event), {
         observer: "onSubIssue",
       });
-    }
-  };
-
-  const triggerCleanup = async (): Promise<void> => {
-    if (cleanupStarted) {
-      return;
-    }
-
-    cleanupStarted = true;
-    notifyPhase("cleanup");
-    try {
-      await cleanup.triggerAll();
-    } catch (error) {
-      logger.error({ err: error, runId: fallbackRunId }, "cleanup failed");
     }
   };
 
@@ -1120,15 +978,10 @@ export async function runIssueOrchestration(
 
     notifyPhase("lock");
     await deps.acquireRunLock();
-    cleanup.register(async () => {
-      await deps.releaseRunLock();
-    });
+    runLockAcquired = true;
     throwIfAborted(sessionController.signal);
 
     notifyPhase("vault");
-    let managedVault = false;
-    let vaultId: string | undefined;
-    const ensuredCredentials: Array<{ credentialId: string; managed: boolean }> = [];
     const githubMcpCredentialIds = new Set<string>();
     const ensuredCredentialIds = new Set<string>();
     const recordEnsuredCredential = (credential: EnsuredMcpCredential) => {
@@ -1137,10 +990,6 @@ export async function runIssueOrchestration(
       }
 
       ensuredCredentialIds.add(credential.credentialId);
-      ensuredCredentials.push({
-        credentialId: credential.credentialId,
-        managed: credential.managedByUs,
-      });
       if (credential.mcpServerUrl === GITHUB_MCP_URL) {
         githubMcpCredentialIds.add(credential.credentialId);
       }
@@ -1149,19 +998,7 @@ export async function runIssueOrchestration(
     const vault = await deps.ensureVault(anthropicClient, {
       configVaultId: configuredVaultId,
     });
-    vaultId = vault.vaultId;
-    managedVault = vault.managedByUs;
-    cleanup.register(async () => {
-      if (!vaultId) {
-        return;
-      }
-
-      await deps.releaseVault(anthropicClient, {
-        credentials: ensuredCredentials,
-        managedVault,
-        vaultId,
-      });
-    });
+    const managedVault = vault.managedByUs;
 
     // Resolve env-backed bearer tokens for enabled MCP servers when needed,
     // then ensure one Vault credential per `mcp_server_url`. Configured vaults
@@ -1254,12 +1091,8 @@ export async function runIssueOrchestration(
         "failed to record parent session placeholder",
       );
     }
-    cleanup.register(async () => {
-      await deleteSessionForCleanup(anthropicClient, parentSession.id, logger);
-    });
-    registerGitHubAppTokenRefresh({
+    stopGitHubAppTokenRefresh = registerGitHubAppTokenRefresh({
       anthropicClient,
-      cleanup,
       credentialIds: () => [...githubMcpCredentialIds],
       getAccess: () => githubAccess,
       githubAuth: deps.githubAuth,
@@ -1447,7 +1280,6 @@ export async function runIssueOrchestration(
     if (sessionController.signal.aborted || sessionResult.aborted) {
       notifyPhase("aborted");
       safeSetRunStatus("aborted");
-      await triggerCleanup();
       return {
         aborted: true,
         runId: fallbackRunId,
@@ -1472,7 +1304,6 @@ export async function runIssueOrchestration(
     }
 
     safeSetRunStatus("completed");
-    await triggerCleanup();
     return {
       aborted: false,
       prUrl: runState.prUrl,
@@ -1494,7 +1325,6 @@ export async function runIssueOrchestration(
       err: error,
       type: errored.type,
     });
-    await triggerCleanup();
 
     return {
       aborted: wasAborted,
@@ -1504,6 +1334,17 @@ export async function runIssueOrchestration(
       timedOut: errored.type === "timeout",
     };
   } finally {
+    stopGitHubAppTokenRefresh?.();
+
+    if (runLockAcquired) {
+      runLockAcquired = false;
+      try {
+        await deps.releaseRunLock();
+      } catch (error) {
+        logger.error({ err: error, runId: fallbackRunId }, "failed to release run lock");
+      }
+    }
+
     if (deps.signal && externalAbortListener) {
       deps.signal.removeEventListener("abort", externalAbortListener);
     }

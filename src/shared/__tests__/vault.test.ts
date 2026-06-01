@@ -30,11 +30,6 @@ const SAMPLE_GITHUB_SERVER: ResolvedMcpCredential = {
 };
 const ISO_TIMESTAMP = "2026-04-23T00:00:00.000Z";
 
-type CredentialDeleteInvocation = {
-  credentialId: string;
-  vaultId: string;
-};
-
 type CredentialUpdateInvocation = {
   credentialId: string;
   params: CredentialUpdateParams;
@@ -45,11 +40,9 @@ type MockVaultClientOptions = {
   createdCredentialIds?: string[];
   createdVaultId?: string;
   credentialCreateImplementation?: (invocationCount: number) => Promise<void>;
-  credentialDeleteImplementation?: (invocationCount: number) => Promise<void>;
   credentialUpdateImplementation?: (invocationCount: number) => Promise<void>;
   listedCredentials?: BetaManagedAgentsCredential[];
   retrievedVaultId?: string;
-  vaultDeleteImplementation?: (invocationCount: number) => Promise<void>;
 };
 
 async function createTempLogFile(): Promise<string> {
@@ -112,10 +105,6 @@ function createCredentialStream(
   };
 }
 
-function createNotFoundError(): Error & { status: number } {
-  return Object.assign(new Error("not found"), { status: 404 });
-}
-
 function createLoggerSpy(): { logger: Logger; warnCalls: unknown[][] } {
   const warnCalls: unknown[][] = [];
   const childLogger = {
@@ -139,13 +128,9 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
   const listCredentialInvocations: string[] = [];
   const createCredentialInvocations: Array<{ params: CredentialCreateParams; vaultId: string }> =
     [];
-  const deleteCredentialInvocations: CredentialDeleteInvocation[] = [];
   const updateCredentialInvocations: CredentialUpdateInvocation[] = [];
-  const deleteVaultInvocations: string[] = [];
 
-  let credentialDeleteCount = 0;
   let credentialUpdateCount = 0;
-  let vaultDeleteCount = 0;
 
   const client = {
     beta: {
@@ -166,15 +151,6 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
               params.auth.mcp_server_url,
             );
           },
-          delete: async (credentialId: string, params: { vault_id: string }) => {
-            deleteCredentialInvocations.push({ credentialId, vaultId: params.vault_id });
-            credentialDeleteCount += 1;
-            await options.credentialDeleteImplementation?.(credentialDeleteCount);
-            return {
-              id: credentialId,
-              type: "vault_credential_deleted" as const,
-            };
-          },
           list: (vaultId: string) => {
             listCredentialInvocations.push(vaultId);
             return createCredentialStream(options.listedCredentials ?? []);
@@ -185,15 +161,6 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
             await options.credentialUpdateImplementation?.(credentialUpdateCount);
             return { id: credentialId };
           },
-        },
-        delete: async (vaultId: string) => {
-          deleteVaultInvocations.push(vaultId);
-          vaultDeleteCount += 1;
-          await options.vaultDeleteImplementation?.(vaultDeleteCount);
-          return {
-            id: vaultId,
-            type: "vault_deleted" as const,
-          };
         },
         retrieve: async (vaultId: string) => {
           retrieveVaultInvocations.push(vaultId);
@@ -207,8 +174,6 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
     client,
     createCredentialInvocations,
     createVaultInvocations,
-    deleteCredentialInvocations,
-    deleteVaultInvocations,
     listCredentialInvocations,
     retrieveVaultInvocations,
     updateCredentialInvocations,
@@ -583,92 +548,6 @@ describe("vault helpers", () => {
     );
   });
 
-  test("releaseVault deletes a self-created credential before deleting a self-created vault", async () => {
-    const deletionSequence: string[] = [];
-    const mockVaultClient = createMockVaultClient({
-      credentialDeleteImplementation: async () => {
-        deletionSequence.push("credential");
-      },
-      vaultDeleteImplementation: async () => {
-        deletionSequence.push("vault");
-      },
-    });
-    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
-
-    await vaultModule.releaseVault(mockVaultClient.client, {
-      credentials: [{ credentialId: "vcrd_auto", managed: true }],
-      managedVault: true,
-      vaultId: "vlt_auto",
-    });
-
-    expect(mockVaultClient.deleteCredentialInvocations).toEqual([
-      { credentialId: "vcrd_auto", vaultId: "vlt_auto" },
-    ]);
-    expect(mockVaultClient.deleteVaultInvocations).toEqual(["vlt_auto"]);
-    expect(deletionSequence).toEqual(["credential", "vault"]);
-  });
-
-  test("releaseVault leaves pre-existing vaults and credentials untouched", async () => {
-    const mockVaultClient = createMockVaultClient();
-    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
-
-    await vaultModule.releaseVault(mockVaultClient.client, {
-      credentials: [{ credentialId: "vcrd_existing", managed: false }],
-      managedVault: false,
-      vaultId: "vlt_existing",
-    });
-
-    expect(mockVaultClient.deleteCredentialInvocations).toEqual([]);
-    expect(mockVaultClient.deleteVaultInvocations).toEqual([]);
-  });
-
-  test("releaseVault deletes only managed credentials from the credentials array", async () => {
-    const mockVaultClient = createMockVaultClient();
-    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
-
-    await vaultModule.releaseVault(mockVaultClient.client, {
-      credentials: [
-        { credentialId: "vcrd_existing", managed: false },
-        { credentialId: "vcrd_auto", managed: true },
-        { credentialId: "vcrd_other_existing", managed: false },
-      ],
-      managedVault: false,
-      vaultId: "vlt_mixed",
-    });
-
-    expect(mockVaultClient.deleteCredentialInvocations).toEqual([
-      { credentialId: "vcrd_auto", vaultId: "vlt_mixed" },
-    ]);
-    expect(mockVaultClient.deleteVaultInvocations).toEqual([]);
-  });
-
-  test("releaseVault is idempotent and swallows 404 responses", async () => {
-    const mockVaultClient = createMockVaultClient({
-      credentialDeleteImplementation: async (invocationCount) => {
-        if (invocationCount === 2) {
-          throw createNotFoundError();
-        }
-      },
-      vaultDeleteImplementation: async (invocationCount) => {
-        if (invocationCount === 2) {
-          throw createNotFoundError();
-        }
-      },
-    });
-    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
-    const releaseContext = {
-      credentials: [{ credentialId: "vcrd_auto", managed: true }],
-      managedVault: true,
-      vaultId: "vlt_auto",
-    };
-
-    await vaultModule.releaseVault(mockVaultClient.client, releaseContext);
-    await vaultModule.releaseVault(mockVaultClient.client, releaseContext);
-
-    expect(mockVaultClient.deleteCredentialInvocations).toHaveLength(2);
-    expect(mockVaultClient.deleteVaultInvocations).toHaveLength(2);
-  });
-
   test("throws VaultApiUnavailable when the SDK vault namespace is missing", async () => {
     const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
 
@@ -683,7 +562,6 @@ describe("vault helpers", () => {
         vaults: {
           create: async (params: { display_name: string }) =>
             createVaultRecord(params.display_name),
-          delete: async () => ({ type: "vault_deleted" as const }),
           retrieve: async (vaultId: string) => createVaultRecord(vaultId),
         },
       },

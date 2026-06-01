@@ -56,7 +56,6 @@ import { acquireRunLock, readAgentState, releaseRunLock, writeRunState } from "@
 import {
   ensureMcpCredentials,
   ensureVault,
-  releaseVault,
   updateMcpCredentialToken,
 } from "@/shared/vault";
 
@@ -280,7 +279,6 @@ const executor = async (
     anthropicClient: anthropicClient as RunExecutionDeps["anthropicClient"],
     buildChildPrompt,
     buildParentPrompt,
-    cleanup: undefined,
     db,
     ensureAgents: agentRegistry.ensureAgents,
     ensureEnvironment,
@@ -298,7 +296,6 @@ const executor = async (
     parentCustomTools: PARENT_CUSTOM_TOOLS,
     readIssue,
     releaseRunLock,
-    releaseVault,
     runEvents,
     runPreflight,
     runSession,

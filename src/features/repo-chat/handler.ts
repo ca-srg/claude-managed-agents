@@ -22,13 +22,7 @@ import type {
 import type { createDbModule, McpServer } from "@/shared/persistence/db";
 import type { RepoChatMessageRow } from "@/shared/persistence/schemas";
 import type { runSession } from "@/shared/session";
-import type {
-  EnsuredMcpCredential,
-  ensureMcpCredentials,
-  ensureVault,
-  ResolvedMcpCredential,
-  releaseVault,
-} from "@/shared/vault";
+import type { ensureMcpCredentials, ensureVault, ResolvedMcpCredential } from "@/shared/vault";
 
 type DbModule = ReturnType<typeof createDbModule>;
 
@@ -58,7 +52,6 @@ type SessionApiClient = {
   beta: {
     sessions: {
       create(params: SessionCreateParams): PromiseLike<{ id: string }>;
-      delete(sessionId: string): PromiseLike<unknown>;
       events: {
         send(
           sessionId: string,
@@ -75,7 +68,6 @@ export type RepositoryChatAnthropicClient = AgentsApiClient &
   Parameters<typeof ensureEnvironmentForRepo>[0] &
   Parameters<typeof ensureVault>[0] &
   Parameters<typeof ensureMcpCredentials>[0] &
-  Parameters<typeof releaseVault>[0] &
   Parameters<typeof runSession>[0];
 
 export type RepositoryChatContextFlags = {
@@ -110,7 +102,6 @@ export type RepositoryChatDeps = {
   ensureVault: typeof ensureVault;
   githubAuth: GitHubAuthProvider;
   logger: Logger;
-  releaseVault: typeof releaseVault;
   runSession: typeof runSession;
   timeoutMs?: number;
 };
@@ -269,30 +260,17 @@ async function ensureChatVault(
   enabledMcpServers: ReadonlyArray<McpServer>,
   githubAuth: GitHubRepositoryAuthorization,
 ): Promise<{
-  credentials: Array<{ credentialId: string; managed: boolean }>;
-  managedVault: boolean;
   vaultId: string | undefined;
 }> {
   if (enabledMcpServers.length === 0) {
-    return { credentials: [], managedVault: false, vaultId: undefined };
+    return { vaultId: undefined };
   }
 
   const vault = await deps.ensureVault(deps.anthropicClient, {
     configVaultId: deps.config.vaultId,
   });
-  const credentials: Array<{ credentialId: string; managed: boolean }> = [];
-  const credentialIds = new Set<string>();
-  const recordCredential = (credential: EnsuredMcpCredential) => {
-    if (credentialIds.has(credential.credentialId)) {
-      return;
-    }
-
-    credentialIds.add(credential.credentialId);
-    credentials.push({ credentialId: credential.credentialId, managed: credential.managedByUs });
-  };
 
   await deps.ensureMcpCredentials(deps.anthropicClient, {
-    onCredentialEnsured: recordCredential,
     servers: resolveMcpCredentials(enabledMcpServers, {
       githubAuth,
       requireToken: vault.managedByUs,
@@ -300,7 +278,7 @@ async function ensureChatVault(
     vaultId: vault.vaultId,
   });
 
-  return { credentials, managedVault: vault.managedByUs, vaultId: vault.vaultId };
+  return { vaultId: vault.vaultId };
 }
 
 function formatHistory(history: RepoChatMessageRow[]): string {
@@ -397,78 +375,51 @@ export async function runRepositoryChatTurn(
   const environmentId = await ensureChatEnvironment(deps, input.repo);
   const enabledMcpServers = deps.db.listMcpServers().filter((server) => server.enabled);
   const vault = await ensureChatVault(deps, enabledMcpServers, githubAuth);
-  let sessionId: string | undefined;
+  const session = await deps.anthropicClient.beta.sessions.create({
+    agent: agent.agentId,
+    environment_id: environmentId,
+    resources: [
+      {
+        authorization_token: githubAuth.authorizationToken,
+        checkout: { name: deps.config.pr.base ?? "main", type: "branch" },
+        mount_path: `/workspace/${input.repoName}`,
+        type: "github_repository",
+        url: `https://github.com/${input.repo}`,
+      },
+    ],
+    ...(vault.vaultId === undefined ? {} : { vault_ids: [vault.vaultId] }),
+  });
+  const sessionId = session.id;
 
-  try {
-    const session = await deps.anthropicClient.beta.sessions.create({
-      agent: agent.agentId,
-      environment_id: environmentId,
-      resources: [
-        {
-          authorization_token: githubAuth.authorizationToken,
-          checkout: { name: deps.config.pr.base ?? "main", type: "branch" },
-          mount_path: `/workspace/${input.repoName}`,
-          type: "github_repository",
-          url: `https://github.com/${input.repo}`,
-        },
-      ],
-      ...(vault.vaultId === undefined ? {} : { vault_ids: [vault.vaultId] }),
-    });
-    sessionId = session.id;
+  await deps.anthropicClient.beta.sessions.events.send(sessionId, {
+    events: [
+      {
+        content: [{ text: buildTurnPrompt(input), type: "text" }],
+        type: "user.message",
+      },
+    ],
+  });
 
-    await deps.anthropicClient.beta.sessions.events.send(sessionId, {
-      events: [
-        {
-          content: [{ text: buildTurnPrompt(input), type: "text" }],
-          type: "user.message",
-        },
-      ],
-    });
+  const result = await deps.runSession(deps.anthropicClient, {
+    handlers: {},
+    logger,
+    model: deps.config.models.child,
+    sessionId,
+    timeouts: { maxWallClockMs: deps.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS },
+  });
 
-    const result = await deps.runSession(deps.anthropicClient, {
-      handlers: {},
-      logger,
-      model: deps.config.models.child,
-      sessionId,
-      timeouts: { maxWallClockMs: deps.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS },
-    });
-
-    if (result.errored) {
-      throw new Error("Managed Agents chat session errored before completing a response");
-    }
-
-    if (result.timedOut) {
-      throw new Error("Managed Agents chat session timed out before completing a response");
-    }
-
-    const content = await readLatestAssistantMessage(deps.anthropicClient, sessionId);
-    if (content === null) {
-      throw new Error("Managed Agents chat session completed without an assistant message");
-    }
-
-    return { content, sessionId };
-  } finally {
-    if (sessionId !== undefined) {
-      try {
-        await deps.anthropicClient.beta.sessions.delete(sessionId);
-      } catch (error) {
-        logger.warn({ err: error, sessionId }, "failed to delete repository chat session");
-      }
-    }
-
-    if (vault.vaultId !== undefined) {
-      try {
-        await deps.releaseVault(deps.anthropicClient, {
-          credentials: vault.credentials,
-          managedVault: vault.managedVault,
-          vaultId: vault.vaultId,
-        });
-      } catch (error) {
-        logger.warn(
-          { err: error, vaultId: vault.vaultId },
-          "failed to release repository chat vault",
-        );
-      }
-    }
+  if (result.errored) {
+    throw new Error("Managed Agents chat session errored before completing a response");
   }
+
+  if (result.timedOut) {
+    throw new Error("Managed Agents chat session timed out before completing a response");
+  }
+
+  const content = await readLatestAssistantMessage(deps.anthropicClient, sessionId);
+  if (content === null) {
+    throw new Error("Managed Agents chat session completed without an assistant message");
+  }
+
+  return { content, sessionId };
 }

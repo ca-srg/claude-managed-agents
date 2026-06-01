@@ -19,7 +19,6 @@ type StaleRunReaperRunEvents = Pick<ReturnType<typeof createRunEventsModule>, "e
 export type StaleRunReaperSessionClient = {
   beta: {
     sessions: {
-      delete(sessionId: string): PromiseLike<unknown>;
       events: {
         list(
           sessionId: string,
@@ -121,16 +120,12 @@ type StaleRequiresActionSession = {
 const STALE_REQUIRES_ACTION_ERROR_TYPE = "stale_requires_action";
 const REAPER_COMPONENT = "stale-run-reaper";
 const REAPER_REMOTE_CALL_TIMEOUT_MS = 30_000;
-const DELETE_SESSION_MAX_ATTEMPTS = 3;
-const DELETE_SESSION_RETRY_DELAY_MS = 250;
 
 type RemoteCallResult<T> =
   | { ok: true; value: T }
   | { error: unknown; ok: false; reason: "aborted" | "error" | "timeout" };
 
-type InterruptAndDeleteSessionResult =
-  | { ok: true }
-  | { error: unknown; ok: false; stage: "delete" | "interrupt" };
+type InterruptSessionResult = { ok: true } | { error: unknown; ok: false; stage: "interrupt" };
 
 function parseBooleanEnv(name: string, value: string | undefined): boolean | undefined {
   const rawValue = value?.trim().toLowerCase();
@@ -458,14 +453,13 @@ function staleRequiresActionErrorPayload(input: {
   };
 }
 
-export async function interruptAndDeleteSession(input: {
+export async function interruptSession(input: {
   client: StaleRunReaperSessionClient;
   logger: Logger | undefined;
   runId: string;
   sessionId: string;
   signal: AbortSignal;
-  sleep: (ms: number, signal: AbortSignal) => Promise<void>;
-}): Promise<InterruptAndDeleteSessionResult> {
+}): Promise<InterruptSessionResult> {
   const interruptResult = await runRemoteCall({
     context: { runId: input.runId, sessionId: input.sessionId },
     logger: input.logger,
@@ -480,76 +474,24 @@ export async function interruptAndDeleteSession(input: {
     if (isAnthropicNotFoundError(interruptResult.error)) {
       input.logger?.debug(
         { runId: input.runId, sessionId: input.sessionId },
-        "stale session not found during interrupt; continuing to delete",
-      );
-    } else {
-      if (interruptResult.reason === "aborted") {
-        return { error: interruptResult.error, ok: false, stage: "interrupt" };
-      }
-      input.logger?.warn(
-        {
-          err: interruptResult.error,
-          reason: interruptResult.reason,
-          runId: input.runId,
-          sessionId: input.sessionId,
-        },
-        "failed to interrupt stale session before delete; continuing to delete",
-      );
-    }
-  }
-
-  let lastDeleteError: unknown = remoteCallError("stale session delete did not run");
-  for (let attempt = 1; attempt <= DELETE_SESSION_MAX_ATTEMPTS; attempt += 1) {
-    const deleteResult = await runRemoteCall({
-      context: { attempt, runId: input.runId, sessionId: input.sessionId },
-      logger: input.logger,
-      operation: "sessions.delete",
-      promise: input.client.beta.sessions.delete(input.sessionId),
-      signal: input.signal,
-    });
-
-    if (deleteResult.ok) {
-      return { ok: true };
-    }
-
-    if (isAnthropicNotFoundError(deleteResult.error)) {
-      input.logger?.debug(
-        { attempt, runId: input.runId, sessionId: input.sessionId },
-        "stale session already deleted",
+        "stale session not found during interrupt; treating as already stopped",
       );
       return { ok: true };
     }
 
-    lastDeleteError = deleteResult.error;
     input.logger?.warn(
       {
-        attempt,
-        err: deleteResult.error,
-        maxAttempts: DELETE_SESSION_MAX_ATTEMPTS,
-        reason: deleteResult.reason,
+        err: interruptResult.error,
+        reason: interruptResult.reason,
         runId: input.runId,
         sessionId: input.sessionId,
       },
-      "failed to delete stale session",
+      "failed to interrupt stale session",
     );
-
-    if (deleteResult.reason === "aborted") {
-      return { error: deleteResult.error, ok: false, stage: "delete" };
-    }
-
-    if (attempt < DELETE_SESSION_MAX_ATTEMPTS) {
-      await input.sleep(DELETE_SESSION_RETRY_DELAY_MS, input.signal);
-      if (input.signal.aborted) {
-        return {
-          error: remoteCallError("sessions.delete retry aborted"),
-          ok: false,
-          stage: "delete",
-        };
-      }
-    }
+    return { error: interruptResult.error, ok: false, stage: "interrupt" };
   }
 
-  return { error: lastDeleteError, ok: false, stage: "delete" };
+  return { ok: true };
 }
 
 function safeEmit(
@@ -602,7 +544,7 @@ function terminalizeFailedRun(input: {
   if (!terminalized) {
     input.deps.logger?.warn(
       { runId: input.runId, sessionId: input.staleSession.sessionId },
-      "stale run was no longer running after session delete; skipping terminal events",
+      "stale run was no longer running after session interrupt; skipping terminal events",
     );
     return false;
   }
@@ -746,24 +688,23 @@ export function createStaleRunReaper(deps: StaleRunReaperDeps): StaleRunReaper {
       return "skipped";
     }
 
-    const deleteResult = await interruptAndDeleteSession({
+    const interruptResult = await interruptSession({
       client: deps.anthropicClient,
       logger: deps.logger,
       runId,
       sessionId: staleSession.sessionId,
       signal,
-      sleep,
     });
-    if (!deleteResult.ok) {
+    if (!interruptResult.ok) {
       deps.logger?.warn(
         {
-          err: deleteResult.error,
+          err: interruptResult.error,
           runId,
           sessionId: staleSession.sessionId,
-          stage: deleteResult.stage,
+          stage: interruptResult.stage,
           staleForMs: staleSession.staleForMs,
         },
-        "stale session delete did not complete; deferring run terminalization",
+        "stale session interrupt did not complete; deferring run terminalization",
       );
       return "deferred";
     }
