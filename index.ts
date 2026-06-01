@@ -32,7 +32,11 @@ import {
 import { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
 import { buildChildPrompt } from "@/shared/agents/prompts/child";
 import { buildParentPrompt } from "@/shared/agents/prompts/parent";
-import { ensureAgents } from "@/shared/agents/registry";
+import {
+  createDatabaseAgentRegistryStateStore,
+  createRegistry,
+} from "@/shared/agents/registry";
+import { migrateLegacyAgentStateToDb } from "@/shared/agents/state-migration";
 import { loadConfig } from "@/shared/config";
 import {
   createGitHubAuthProvider,
@@ -235,6 +239,7 @@ cleanup.register(async () => {
 const db = createDbModule(serverEnv.dbPath, { logger });
 
 db.initDb();
+await migrateLegacyAgentStateToDb({ db, readAgentState });
 cleanup.register(async () => {
   try {
     db.close();
@@ -262,6 +267,9 @@ cleanup.register(async () => {
 
 const Anthropic = (await import("@anthropic-ai/sdk")).default;
 const anthropicClient = new Anthropic();
+const agentRegistry = createRegistry({
+  agentStateStore: createDatabaseAgentRegistryStateStore(db),
+});
 
 const executor = async (
   input: QueuedRunExecutionInput,
@@ -274,7 +282,7 @@ const executor = async (
     buildParentPrompt,
     cleanup: undefined,
     db,
-    ensureAgents,
+    ensureAgents: agentRegistry.ensureAgents,
     ensureEnvironment,
     ensureEnvironmentForRepo,
     ensureMcpCredentials,
@@ -288,7 +296,6 @@ const executor = async (
     loadRepoContext,
     logger,
     parentCustomTools: PARENT_CUSTOM_TOOLS,
-    readAgentState,
     readIssue,
     releaseRunLock,
     releaseVault,

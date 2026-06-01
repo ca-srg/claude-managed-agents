@@ -8,7 +8,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/environments";
 
 import { type RepoEnvironmentPackages, RepoSlugSchema } from "@/shared/persistence/schemas";
-import type { AgentState } from "@/shared/types";
+import type { DefaultEnvironmentState } from "@/shared/types";
 
 const DEFAULT_ENVIRONMENT_NAME = "github-issue-agent-env";
 const BASE_PACKAGES = {
@@ -19,7 +19,7 @@ const REPO_ENV_NAME_PREFIX = "gh-iea-";
 const REPO_ENV_NAME_MAX_LEN = 120;
 
 type EnvironmentCacheState =
-  | Pick<AgentState, "definitionHash" | "environmentId">
+  | Pick<DefaultEnvironmentState, "definitionHash" | "environmentId">
   | null
   | undefined;
 

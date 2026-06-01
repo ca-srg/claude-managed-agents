@@ -5,7 +5,7 @@ import type {
   EnvironmentUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/environments";
 import type { RepoEnvironmentPackages } from "@/shared/persistence/schemas";
-import type { AgentState } from "@/shared/types";
+import type { DefaultEnvironmentState } from "@/shared/types";
 import {
   buildEnvironmentDefinition,
   buildRepoEnvironmentDefinition,
@@ -57,15 +57,14 @@ function containsKey(value: unknown, searchedKey: string): boolean {
   return false;
 }
 
-function createAgentState(overrides: Partial<AgentState> = {}): AgentState {
+function createDefaultEnvironmentState(
+  overrides: Partial<DefaultEnvironmentState> = {},
+): DefaultEnvironmentState {
   return {
-    parentAgentId: "parent-agent",
-    parentAgentVersion: 1,
-    childAgentId: "child-agent",
-    childAgentVersion: 2,
     environmentId: "env_cached",
     definitionHash: "cached-hash",
     createdAt: "2026-04-23T00:00:00.000Z",
+    updatedAt: "2026-04-23T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -188,7 +187,7 @@ describe("environment", () => {
 
     const ensureOutcome = await ensureEnvironment(
       client,
-      createAgentState({
+      createDefaultEnvironmentState({
         definitionHash,
         environmentId: "env_cached_match",
       }),
@@ -218,7 +217,7 @@ describe("environment", () => {
 
     const ensureOutcome = await ensureEnvironment(
       client,
-      createAgentState({
+      createDefaultEnvironmentState({
         definitionHash: "stale-hash",
         environmentId: "env_stale",
       }),

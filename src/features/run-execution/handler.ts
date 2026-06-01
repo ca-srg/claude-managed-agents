@@ -10,7 +10,7 @@ import type { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agent
 import type { ParentCustomTools } from "@/shared/agents/parent";
 import type { buildChildPrompt } from "@/shared/agents/prompts/child";
 import type { buildParentPrompt } from "@/shared/agents/prompts/parent";
-import type { ensureAgents } from "@/shared/agents/registry";
+import type { EnsureAgents } from "@/shared/agents/registry";
 import type { Config, loadConfig } from "@/shared/config";
 import { BUILTIN_GITHUB_MCP_NAME, GITHUB_MCP_URL, LINEAR_MCP_URL } from "@/shared/constants";
 import type { GitHubAuthProvider, GitHubRepositoryAccess, readIssue } from "@/shared/github";
@@ -31,7 +31,7 @@ import {
   type RunOrigin,
 } from "@/shared/run-origin";
 import type { runSession, ThreadObserver, ToolHandlerContext } from "@/shared/session";
-import type { acquireRunLock, readAgentState, releaseRunLock, writeRunState } from "@/shared/state";
+import type { acquireRunLock, releaseRunLock, writeRunState } from "@/shared/state";
 import type { RunPhase, RunState, RunStatus } from "@/shared/types";
 import type {
   EnsuredMcpCredential,
@@ -75,7 +75,7 @@ type SessionApiClient = {
   };
 };
 
-type AnthropicClientLike = Parameters<typeof ensureAgents>[0] &
+type AnthropicClientLike = Parameters<EnsureAgents>[0] &
   Parameters<typeof ensureEnvironment>[0] &
   Parameters<typeof ensureEnvironmentForRepo>[0] &
   Parameters<typeof ensureVault>[0] &
@@ -90,6 +90,7 @@ type RunEventsModule = Pick<ReturnType<typeof createRunEventsModule>, "emit">;
 
 export type RunExecutionDb = Pick<
   DashboardDbModule,
+  | "getDefaultEnvironmentState"
   | "getPrompt"
   | "getRepoEnvironment"
   | "getRepoPrompt"
@@ -98,6 +99,7 @@ export type RunExecutionDb = Pick<
   | "insertSessionPlaceholder"
   | "listMcpServers"
   | "seedPromptIfMissing"
+  | "setDefaultEnvironmentState"
   | "setRepoEnvironmentAnthropicState"
   | "setRunPhase"
   | "setRunStatus"
@@ -124,7 +126,7 @@ export type RunExecutionDeps = {
   buildParentPrompt: typeof buildParentPrompt;
   cleanup?: RunExecutionCleanup;
   db?: RunExecutionDb;
-  ensureAgents: typeof ensureAgents;
+  ensureAgents: EnsureAgents;
   ensureEnvironment: typeof ensureEnvironment;
   ensureEnvironmentForRepo: typeof ensureEnvironmentForRepo;
   ensureMcpCredentials: typeof ensureMcpCredentials;
@@ -147,7 +149,6 @@ export type RunExecutionDeps = {
    * `buildParentDefinition`; do not include `mcp_toolset` entries here.
    */
   parentCustomTools: ParentCustomTools;
-  readAgentState: typeof readAgentState;
   readIssue: typeof readIssue;
   releaseRunLock: typeof releaseRunLock;
   releaseVault: typeof releaseVault;
@@ -1062,7 +1063,6 @@ export async function runIssueOrchestration(
     throwIfAborted(sessionController.signal);
 
     notifyPhase("environment");
-    const cachedAgentState = await deps.readAgentState();
     const repoEnvRow = db.getRepoEnvironment(repoSlug);
     let environmentId: string;
 
@@ -1083,8 +1083,17 @@ export async function runIssueOrchestration(
       }
       environmentId = ensureRepoOutcome.environmentId;
     } else {
-      const ensureOutcome = await deps.ensureEnvironment(anthropicClient, cachedAgentState);
+      const ensureOutcome = await deps.ensureEnvironment(
+        anthropicClient,
+        db.getDefaultEnvironmentState(),
+      );
       environmentId = ensureOutcome.environmentId;
+      if (ensureOutcome.created) {
+        db.setDefaultEnvironmentState({
+          definitionHash: ensureOutcome.hash,
+          environmentId: ensureOutcome.environmentId,
+        });
+      }
     }
     await deps.seedAgentPrompts({ db, logger });
     const prompts = await deps.loadAgentPrompts({ db, logger });
@@ -1102,7 +1111,6 @@ export async function runIssueOrchestration(
     const agents = await deps.ensureAgents(anthropicClient, {
       cfg,
       childPrompt: prompts.child,
-      environmentId,
       forceRecreate: deps.forceRecreate,
       mcpServers,
       parentCustomTools: deps.parentCustomTools,

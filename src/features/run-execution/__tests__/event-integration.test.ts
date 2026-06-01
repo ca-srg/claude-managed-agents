@@ -79,6 +79,7 @@ function createMockDb() {
   };
 
   const db = {
+    getDefaultEnvironmentState: () => null,
     getPrompt: () => null,
     getRepoEnvironment: () => null,
     getRepoPrompt: () => null,
@@ -93,6 +94,7 @@ function createMockDb() {
     },
     listMcpServers: () => [],
     seedPromptIfMissing: () => ({ seeded: false }),
+    setDefaultEnvironmentState: () => {},
     setRepoEnvironmentAnthropicState: () => {},
     setRunPhase: (runId: string, phase: RunPhase | null) => {
       calls.phases.push({ phase, runId });
@@ -207,7 +209,6 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
     loadRepoContext: (async () => ({ files: [] })) as RunExecutionDeps["loadRepoContext"],
     logger,
     parentCustomTools: [],
-    readAgentState: async () => null,
     readIssue: (async (_octokit, _owner, _repo, issueNumber) => ({
       issue: {
         body: "Parent issue body",

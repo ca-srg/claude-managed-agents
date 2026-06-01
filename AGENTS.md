@@ -1,175 +1,77 @@
 # AGENTS.md — github-issue-agent
 
-## ランタイムとツールチェイン
+## 作業ルール
 
-- **Bun 1.3+** — TS を直接実行。`package.json` に `engines` 指定は無いが、Docker base image は `oven/bun:1.3-debian`
-- **TypeScript** — `strict: true` + `noUncheckedIndexedAccess: true`。`tsconfig.json` の include は `src/**/*` と `test/**/*` のみ (`scripts/**/*` は typecheck 対象外)
-- **パスエイリアス** — `@/*` → `./src/*`。import は `@/shared/config` のように書く
-- **Biome** — formatter + linter 一体。space indent 2, line width 100, recommended rules。対象は `src/**/*`, `tailwind.config.ts`, `package.json`
-- **SDK** — `@anthropic-ai/sdk@0.95.1` (lockfile でピン留め)。Managed Agents Beta multi-agent (coordinator topology) を使用
-- **Tailwind CSS v4** — WebUI のスタイリングに使用
-- **lockfile** — `bun.lock` (text 形式)。`bun.lockb` は使っていない
+- このリポジトリには別のエージェントも作業しているため、他のエージェントが変更したものはそのままにしておいてください。
 
 ## コマンド
 
-```bash
-bun run start              # bun run index.ts
-bun run dev                # bun run --watch index.ts
-bun run build              # = bun run build:css (CSS minify。no-op ではない)
-bun run build:css          # tailwindcss -o dist/dashboard.css --minify
-bun run dev:css            # tailwindcss watch
-bun run typecheck          # tsc --noEmit
-bun run lint               # biome check .
-bun test                   # 全テスト
-bun test path/to/file.ts   # 単一ファイル
-bun test --coverage        # カバレッジ (line 75% / function 50% 閾値: bunfig.toml)
-```
+- Bun 1.3+ 前提。lockfile は text 形式の `bun.lock`。`bun.lockb` / npm / pnpm / yarn lock は使わない。
+- セットアップ: `bun install --frozen-lockfile`。通常のローカル開発は `bun install` でも可。
+- 起動: `bun run start` (= `bun run index.ts`)。watch は `bun run dev`。
+- 検証順: `bun run lint` → `bun run typecheck` → `bun test`。通常 CI はこの 3 つをまとめて走らせない。
+- 単体/範囲テスト: `bun test path/to/file.ts` または `bun test src/features/dev-tunnel`。coverage は `bun test --coverage` (line 75% / function 50%)。
+- `bun run build` は dashboard CSS だけを生成する (`src/features/dashboard/styles/tailwind.css` → `dist/dashboard.css`)。UI/CSS 変更時は走らせる。
+- Live E2E は課金・実 repo 書き込みあり: `E2E=1 TEST_REPO=<owner>/<repo> TEST_ISSUE=<n> bun run scripts/e2e-real.ts`。dry-run harness は `E2E_DRY_RUN=1 TEST_REPO=<owner>/<repo> TEST_ISSUE=<n> bun run scripts/e2e-dry-run.ts`。
 
-検証順: `lint` → `typecheck` → `test`。**CI ではこれらは走らない** (`.github/workflows/` は `fly-deploy.yml` のみで、Fly.io デプロイ専用)。ローカルで通すのは開発者責任。
+## ツールチェインの癖
 
-## ローカル開発
+- TypeScript は `strict` + `noUncheckedIndexedAccess` + `moduleResolution: Bundler`。JSX は Hono (`jsxImportSource: hono/jsx`)。
+- path alias は `@/*` → `./src/*`。import は `@/shared/config` 形式を使う。
+- `tsconfig.json` の include は `src/**/*` と `test/**/*` のみ。`scripts/**/*` は通常 typecheck 対象外だが、`scripts/*.test.ts` は `bun test` で実行される。
+- Biome は formatter+linter 一体。対象は `src/**/*.ts(x)`, `tailwind.config.ts`, `package.json`。`test/e2e/prompts.e2e.*.js` は formatter/linter 無効。
+- `@anthropic-ai/sdk` は lockfile 上 `0.95.1`。Managed Agents の `thinking` / `budget_tokens` は未対応として無効化中。触る前に `TODO(sdk-thinking)`, `TODO(sdk-v0.91)`, `MAX_THINKING_BUDGET_DEFERRED` を検索する。
 
-ローカル開発手順 (前提パッケージ、`bun run start` 実行、検証、トラブル
-シューティング) と、Claude Managed Agents から手元の MCP server に到達する
-ための **ngrok-backed dev tunnel** (`ENABLE_DEV_TUNNEL=true` で
-`mcp-proxy` + `mcp-gateway` + ngrok を自動起動し、`mcp_servers` テーブルを
-公開 URL で upsert する仕組み) は `docs/DEVELOPMENT.md` に集約している。
-新規環境のセットアップや tunnel 関連の挙動を変える前にまずこのドキュメント
-を参照すること。
+## CI / GitHub Actions
+
+- `.github/workflows/e2e.yml` は PR/manual で real E2E を実行する。Dependabot/fork PR では secrets 前提のためスキップ条件あり。
+- `.github/workflows/zizmor.yml` は workflow security scan。`.github/workflows/fly-deploy.yml` は `main` push で `flyctl deploy --remote-only`。
+- GitHub Actions は SHA pin + `# vX` コメントのスタイル。`.github/dependabot.yml` が actions だけ weekly update する。
 
 ## アーキテクチャ
 
-Vertical Slice Architecture。`src/features/` の各ディレクトリが 1 つのユースケースを自己完結的に持ち、レイヤー横断の共有コードは `src/shared/` に置く。
+- Entry point は `index.ts`。DB 初期化、prompt seed、agent registry、run queue、stale-run-reaper、GitHub trigger poller、optional dev tunnel、Hono API/WebUI をここで配線する。
+- Vertical Slice Architecture。`src/features/*` が use case、`src/shared/*` が横断コード。現在の feature には `dev-tunnel` と `stale-run-reaper` も含まれる。
+- HTTP API は GitHub issue と Linear issue origin を扱う。`origin` 省略時は `github_issue`。Linear は `linearIssue` identifier/URL を使う。
+- 新規 Anthropic custom tool を作る時だけ `handler.ts` + `schemas.ts` + `tool-definition.ts` の構成を踏襲する。既存では `decomposition/` と `finalize-pr/`。
+- WebUI は Hono SSR + 最小限の client JS。静的 asset root は `./dist`。
 
-```
-src/
-  features/
-    run-api/                # HTTP API routes (POST /api/runs, SSE multiplexer 等)
-    run-execution/          # Orchestration core (runIssueOrchestration, event-bridge)
-    run-queue/              # FIFO queue + DB-persisted status
-    run-stop/               # Run cancellation
-    dashboard/              # Hono SSR + Tailwind WebUI (pages, components, i18n)
-    decomposition/          # issue → sub-issue 分解 (github-write)
-    finalize-pr/            # 最終 PR 作成
-    github-trigger/         # GitHub Issue polling → /api/runs auto-enqueue (@bot run / label)
-    preflight/              # 実行前バリデーション
-    mcp-gateway/            # Managed Agents から到達可能な MCP gateway (sidecar)
-    repo-chat/              # WebUI 上の repo に対する対話セッション
-  shared/
-    agents/                 # parent/child agent definition, registry, environment, prompts
-    github/                 # Octokit wrapper, 型, issue read プリミティブ
-    persistence/            # SQLite db module + zod schemas (db.ts: SCHEMA_SQL, schemas.ts)
-    prompts/                # default prompt seeding + loader
-    run-events/             # EventEmitter + DB-backed event log + Last-Event-ID
-    session.ts              # Managed Agents イベントループ
-    config.ts               # zod スキーマ + 環境変数オーバーライド
-    state.ts                # .github-issue-agent/ 下の JSON 状態 + proper-lockfile
-    vault.ts                # Anthropic Vault / MCP credential 管理
-    signals.ts              # SIGINT/SIGTERM/uncaught cleanup registry
-    logging.ts              # pino ログ (token 自動マスク)
-    constants.ts            # モデル名, MCP URL, ツール名, ファイルパス定数
-    pricing.ts              # session cost 計算 (claude-opus-4-7 等)
-    tool-schema-core.ts     # zod → Anthropic tool schema の変換ヘルパ
-    types.ts                # RunStatus/RunPhase/RunEvent/RunSummary 等
-index.ts                    # HTTP サーバーのエントリポイント (bun run index.ts)
-```
+## Managed Agents / MCP
 
-## 設計パターン
-
-- **Vertical Slice**: feature 内ファイル構成は均一ではない。`decomposition/` と `finalize-pr/` は `handler.ts` + `schemas.ts` + `tool-definition.ts` の Anthropic tool 構成だが、他 feature は `server.ts`, `poller.ts`, `sse.ts`, `validate.ts` 等で構成される。新規 tool を追加する際だけ 3 ファイル構成を踏襲
-- **Hono SSR**: WebUI は Hono ベースの SSR。クライアントサイド JS は最小限
-- **DI**: 主要モジュール (`persistence`, `registry`, `logging`) は `createXxxModule(overrides)` で依存注入可。テストでは実 I/O をモック
-- **Agent registry**: エージェント定義のハッシュ比較で変更時のみ API に update。child を先に作成 → parent の `multiagent.coordinator` roster に child の `{id, version}` を埋め込む順序で登録
-- **Multi-agent coordinator topology**: parent は `multiagent: { type: "coordinator", agents: [...] }` を持ち、child (`github-issue-implementer`) への delegation は API がネイティブ実行。`spawn_child_task` カスタムツールは廃止。delegation 進捗は `agent.thread_created` / `agent.thread_message_(sent|received)` / `session.thread_status_*` で観測。delegation depth は `registry.ts` の `buildCoordinatorRoster()` で 1 固定
-- **Sidecar 構成 (Fly)**: `scripts/start.sh` は app 本体に加え mcp-proxy / MCP gateway / cloudflared を起動する。詳細は `docs/mcp.md`
-
-## UI/UX 実装
-
-- **`src/features/dashboard/` の WebUI を実装・修正する際は必ず `frontend-design` スキルをロード**。新規ページ・コンポーネント追加、レイアウト変更、Tailwind スタイル調整、視覚的ポリッシュ、レスポンシブ対応が対象
-- WebUI 文言は i18n 必須。`src/features/dashboard/i18n.ts` の `t()` / `tPlural()` 経由で en / ja 両対応にする。ハードコード禁止
-- locale 決定順: `dashboard_locale` cookie → `Accept-Language` → default `en`。切替は `GET /locale/:locale?next=...` で `Set-Cookie`
-- スキルロード後は `@designer` サブエージェントへの委任を優先検討
-- 純粋なバックエンドロジックのみの変更は対象外
+- Parent は `github-issue-orchestrator`、child は `github-issue-implementer`。Managed Agents multi-agent coordinator topology を使う。
+- `src/shared/agents/registry.ts` は child を先に create/update し、parent の `multiagent.coordinator` roster に child `{id, version}` を埋め込む。registry state は DB の `agent_registry_state`。
+- `spawn_child_task` custom tool は廃止済み。parent custom tools は `create_final_pr` と `create_sub_issue` だけ (`src/parent-tools.ts`)。
+- Delegation 観測イベント名は `session.thread_created`, `agent.thread_message_sent/received`, `session.thread_status_*`。
+- MCP toolsets は DB の `mcp_servers` から agent definition に入る。`src/parent-tools.ts` に MCP tool を足さない。
+- Builtin GitHub MCP は name `github`, URL `https://api.githubcopilot.com/mcp/`。GitHub App installation token を repo ごとに mint して使う。
+- Linear origin は enabled MCP server URL `https://mcp.linear.app/mcp` が必須。managed vault credential を作る run ではその row の `token_env_name` も必須。
 
 ## DB / 永続化
 
-- ランタイム DB: `.github-issue-agent/dashboard.db` (SQLite + WAL)
-- スキーマ: SQL は `src/shared/persistence/db.ts` の `SCHEMA_SQL`、zod は `src/shared/persistence/schemas.ts`
-- **WebUI で CRUD する table が複数存在** (env や config ファイルではなく DB が source of truth):
-  - `prompts` / `prompt_revisions` — agent system prompt
-  - `polled_repositories` — github-trigger の監視対象 (旧 `GITHUB_TRIGGER_REPOS` env は廃止)
-  - `mcp_servers` — Managed Agents が接続する MCP server (builtin: `github` = `https://api.githubcopilot.com/mcp/`, GitHub App installation token を実行時に利用)
-  - `repo_prompts` / `repo_prompt_revisions` — repo 別 prompt override
-  - `repo_environments` / `repo_environment_revisions` — repo 別の環境変数 / setup スクリプト
-  - `repo_chat_state` / `repo_chat_threads` / `repo_chat_messages` — repo-chat feature
-- 他: `runs`, `sessions`, `session_usage`, `run_events`, `sub_issues`, `github_trigger_dedupe`
+- SQLite default は `.github-issue-agent/dashboard.db`。schema source of truth は `src/shared/persistence/db.ts` の `SCHEMA_SQL`。
+- `.github-issue-agent/` は gitignore 済みの runtime state (DB, lock, state, run JSON)。stale lock だけなら `.github-issue-agent/run.lock.lock` を疑う。
+- WebUI 管理データは env/config ではなく DB が source of truth: prompts, polled repositories, MCP servers, repo prompts, repo environments, repo chat, agent registry state。
+- GitHub trigger の監視 repo は `/repositories` で `polled_repositories` に追加する。旧 `GITHUB_TRIGGER_REPOS` env は使わない。poller は常時起動し、空なら no-op。
+- Prompt keys は `parent.system`, `child.system`, `parent.runtime`, `child.runtime`。UI で編集できるのは `*.system`、runtime template は read-only。
+- Config は `github-issue-agent.config.ts/json` または `CONFIG_PATH`。schema は strict。env override は `PARENT_MODEL`, `CHILD_MODEL`, `MAX_SUB_ISSUES`, `MAX_RUN_MINUTES`, `VAULT_ID` のみ。
 
-## Prompts
+## WebUI / i18n
 
-- デフォルトキー: `parent.system`, `child.system`, `parent.runtime`, `child.runtime`
-- 起動時に `index.ts` が `seedDefaultPrompts({ db, logger })` を呼ぶ。`db.seedPromptIfMissing()` で idempotent
-- `loadAgentSystemPrompts()` が DB から `parent.system` / `child.system` を読み、失敗時は source default に fallback
-- **runtime template (`*.runtime`) は UI 上 read-only**。編集対象は `*.system` のみ
+- `src/features/dashboard/` の UI 実装・レイアウト・Tailwind 調整では必ず `frontend-design` skill をロードし、必要なら `@designer` に委任する。
+- WebUI 文言は `src/features/dashboard/i18n.ts` の `t()` / `tPlural()` 経由で en/ja 両対応。ハードコードしない。
+- locale 決定順は `dashboard_locale` cookie → `Accept-Language` → `en`。切替 route は `GET /locale/:locale?next=...`。
 
-## テスト
+## テストの置き場所と fixture
 
-- ソース横の `__tests__/` に colocate するのが基本
-- **加えて以下にもテストが存在** (見落としやすい):
-  - `test/e2e/` — E2E (`prompts.e2e.*.js` 含む。Biome 対象外)
-  - `test/integration/` — integration
-  - `test/parent-tools.test.ts` 等のトップレベルテスト
-  - `scripts/e2e-real.test.ts`, `scripts/replay-qa.test.ts`
-- `bunfig.toml` で `test/setup.ts` を preload (現在は空)
-- `test/fixtures/` に Anthropic API のフェイク (`fake-anthropic.ts`, `fake-anthropic-sessions.ts`)
-- E2E (`scripts/e2e-real.ts`) は実 API 呼び出し: `E2E=1 TEST_REPO=<owner>/<repo> TEST_ISSUE=<n>` が必須。`docs/e2e-setup.md` 参照
-- Dry-run E2E: `scripts/e2e-dry-run.ts` (`E2E_DRY_RUN=1`)
-- Cleanup 検証: `scripts/verify-cleanup.ts` (Vault / session の削除確認)
+- 基本は source 横 `__tests__/`。加えて `test/e2e/`, `test/integration/`, top-level `test/*.test.ts`, `scripts/*.test.ts` がある。
+- `bunfig.toml` で `test/setup.ts` を preload。Anthropic API fake は `test/fixtures/fake-anthropic*.ts`。
+- Real E2E は disposable repo と live credentials が必要。成功/失敗時に PR, branch, sub-issue, Vault/Session を best-effort cleanup する。詳細は `docs/e2e-setup.md`。
 
-## 環境変数
+## 環境・運用 gotchas
 
-主要なもののみ。網羅は `src/shared/config.ts` / `index.ts` / `.env.example` を参照。
-
-| 変数 | 用途 |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API キー (必須) |
-| `GITHUB_APP_ID` / `_PRIVATE_KEY` / `_PRIVATE_KEY_PATH` / `_INSTALLATION_ID` | GitHub App 認証。`_INSTALLATION_ID` は省略可で repo から自動解決 |
-| `PORT` / `HOST` | listen ポート / bind host (default: 3000 / 127.0.0.1。公開時は `HOST=0.0.0.0`) |
-| `DB_PATH` | SQLite path (default: `.github-issue-agent/dashboard.db`) |
-| `CONFIG_PATH` | `github-issue-agent.config.ts` のパスを上書き |
-| `LOG_LEVEL` / `LOG_FILE` | pino ログ設定 (default: `info` / stderr) |
-| `PARENT_MODEL` / `CHILD_MODEL` | モデル名オーバーライド |
-| `MAX_SUB_ISSUES` / `MAX_RUN_MINUTES` | config 上限の env オーバーライド |
-| `VAULT_ID` | 既存 Anthropic Vault を再利用する場合に指定 (無指定なら managed vault を毎回作成) |
-| `GITHUB_TRIGGER_POLL_INTERVAL_SECONDS` | Issue auto-trigger polling 間隔 (default: 60) |
-| `GITHUB_BOT_MENTION` | issue コメント先頭 `@<bot> run` トリガー (default: `bot`) |
-| `GITHUB_TRIGGER_LABEL` | このラベル付与でトリガー (default: `agent-run`) |
-| `MCP_GATEWAY_HOST` / `_PORT` / `_TOKEN` / `_UPSTREAM_URL` | mcp-gateway sidecar 設定 |
-| `MCP_PROXY_HOST` / `_PORT` / `_CONFIG` / `_ALLOW_ORIGIN` | mcp-proxy sidecar 設定 |
-| `CLOUDFLARE_TUNNEL_TOKEN` | Fly 上で cloudflared 経由公開する場合 |
-
-> **NOTE**: 監視対象リポジトリは env ではなく WebUI (`/repositories` の "Add polled repository") で管理する。Poller は常時起動し、テーブルが空のときは各サイクルが no-op になる。
-
-## Vault / MCP credential
-
-- `src/shared/vault.ts` が Managed Agents Vault と MCP credential を管理
-- `VAULT_ID` または `config.vaultId` 指定があれば既存 vault を reuse → cleanup でも削除しない
-- 指定が無ければ managed vault を毎回作成 → run cleanup で削除
-- MCP credential は `mcp_server_url` 単位で reuse。新規は `static_bearer` で作成
-- MCP token は caller が `process.env[server.tokenEnvName]` から解決して渡す (vault モジュールは env を直接読まない)。GitHub App mode の builtin GitHub MCP だけは installation token を caller が渡し、既存 credential も更新する
-- SDK に Vault API が無いケースは `VaultApiUnavailable` を throw
-
-## SDK バージョン依存
-
-- `@anthropic-ai/sdk@0.95.1` 動作確認済 (`bun.lock` で固定)
-- `thinking` / `budget_tokens` は SDK 未対応のため無効化。grep ヒント:
-  - 現行: `TODO(sdk-thinking)` / `MAX_THINKING_BUDGET_DEFERRED` (`src/shared/constants.ts`)
-  - **child 側に古い `TODO(sdk-v0.91)` / `thinking_deferred: "sdk-v0.91"` / `@anthropic-ai/sdk@0.90.0` コメントが残存**。修正時は両方検索すること
-- config test が `thinking` / `budget_tokens` を unknown key として拒否するため、復活させる際はスキーマ更新も必要
-- Anthropic 側の Managed Agents 制約 (agent 数 / thread 数 / 1 agent 当たり MCP server 数等) は `docs/mcp.md` 参照
-
-## 注意事項
-
-- `.github-issue-agent/` は gitignore 済みのランタイムディレクトリ (DB, state.json, run-*.json)
-- `src/shared/logging.ts` が GitHub credential / Anthropic key を自動マスクする。ログに credential が漏れる場合はここを確認
-- `docs/mcp.md` は SDK `0.90.0 / v0.91` 前提の古い表記が混在しているので、SDK 制約の事実関係は `src/shared/constants.ts` と `src/shared/agents/` を優先
-- Fly デプロイは `git push` ベース (`.github/workflows/fly-deploy.yml` が `flyctl deploy --remote-only`)。手元から `flyctl deploy` する場合は `docs/deploy-fly.md`
+- 起動必須 env は `ANTHROPIC_API_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` または `GITHUB_APP_PRIVATE_KEY_PATH`。PAT 認証は無い。`GITHUB_APP_INSTALLATION_ID` は repo から自動解決可。
+- GitHub App mode で複数 repo を扱う時は shared `VAULT_ID` を避ける。MCP credential は URL 単位なので repo-scoped installation token が上書きされ得る。
+- `ENABLE_DEV_TUNNEL=true` は Python `mcp-proxy` + Bun `mcp-gateway` subprocess + ngrok を起動し、`mcp_servers` を tunnel URL に upsert する。`NGROK_AUTHTOKEN` と固定 `MCP_GATEWAY_TOKEN` が必須。詳細は `docs/DEVELOPMENT.md`。
+- Fly runtime は `scripts/start.sh` が app, mcp-proxy, MCP gateway, cloudflared を起動する。`CLOUDFLARE_TUNNEL_TOKEN` 未設定では start.sh が拒否する。
+- Fly の DB default は `/data/app/dashboard.db`。start.sh は `/app/.github-issue-agent` を volume 上の agent-state へ symlink する。
+- `docs/mcp.md` には SDK `0.90.0` / `v0.91` 前提の古い記述が残る。SDK 制約は `src/shared/constants.ts` と `src/shared/agents/*` を優先する。

@@ -406,6 +406,27 @@ export const McpServerUpdateInputSchema = z.object({
 });
 export type McpServerUpdateInput = z.infer<typeof McpServerUpdateInputSchema>;
 
+// --- Global agent registry / default environment state ---
+
+export const AgentRegistryStateSchema = z.object({
+  parentAgentId: NonEmptyStringSchema,
+  parentAgentVersion: PositiveIntegerSchema,
+  childAgentId: NonEmptyStringSchema,
+  childAgentVersion: PositiveIntegerSchema,
+  definitionHash: NonEmptyStringSchema,
+  parentDefinitionHash: NonEmptyStringSchema.nullable(),
+  childDefinitionHash: NonEmptyStringSchema.nullable(),
+  createdAt: NonEmptyStringSchema,
+  updatedAt: NonEmptyStringSchema,
+});
+
+export const DefaultEnvironmentStateSchema = z.object({
+  environmentId: NonEmptyStringSchema,
+  definitionHash: NonEmptyStringSchema,
+  createdAt: NonEmptyStringSchema,
+  updatedAt: NonEmptyStringSchema,
+});
+
 // --- Repository chat ---
 
 export const RepoChatStateSchema = z.object({

@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Config } from "@/shared/config";
-import type { AgentState } from "@/shared/types";
+import { createDbModule } from "@/shared/persistence/db";
 import { createFakeAnthropic } from "../../../../test/fixtures/fake-anthropic";
-import { createRegistry, type EnsureAgentsOptions } from "../registry";
+import {
+  createDatabaseAgentRegistryStateStore,
+  createRegistry,
+  type EnsureAgentsOptions,
+} from "../registry";
 
 const TEST_CONFIG: Config = {
   models: {
@@ -50,10 +54,29 @@ function createEnsureAgentsOptions(
     cfg: TEST_CONFIG,
     parentPrompt: "Parent prompt v1",
     childPrompt: "Child prompt v1",
-    environmentId: "env_123",
     parentCustomTools: [],
     mcpServers: [],
     ...overrides,
+  };
+}
+
+type TestDbModule = ReturnType<typeof createDbModule>;
+
+function createRegistryHarness(): {
+  close(): void;
+  db: TestDbModule;
+  ensureAgents: ReturnType<typeof createRegistry>["ensureAgents"];
+} {
+  const db = createDbModule(":memory:");
+  db.initDb();
+  const { ensureAgents } = createRegistry({
+    agentStateStore: createDatabaseAgentRegistryStateStore(db),
+  });
+
+  return {
+    close: () => db.close(),
+    db,
+    ensureAgents,
   };
 }
 
@@ -61,9 +84,14 @@ function stateFilePath(directoryPath: string): string {
   return join(directoryPath, ".github-issue-agent", "state.json");
 }
 
-function readPersistedState(directoryPath: string): AgentState & Record<string, unknown> {
-  return JSON.parse(readFileSync(stateFilePath(directoryPath), "utf8")) as AgentState &
-    Record<string, unknown>;
+function readPersistedState(db: TestDbModule) {
+  const state = db.getAgentRegistryState();
+
+  if (state === null) {
+    throw new Error("Expected agent registry state to be persisted");
+  }
+
+  return state;
 }
 
 function announceScenario(title: string): void {
@@ -78,30 +106,34 @@ describe("agent registry", () => {
     try {
       await withWorkingDirectory(directoryPath, async () => {
         const { client, calls } = createFakeAnthropic();
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
 
-        const createdAgents = await ensureAgents(client, createEnsureAgentsOptions());
+        try {
+          const createdAgents = await harness.ensureAgents(client, createEnsureAgentsOptions());
 
-        expect(calls.creates).toHaveLength(2);
-        expect(calls.updates).toHaveLength(0);
-        // Child first, then parent (parent's coordinator roster references the resolved child id+version).
-        expect(calls.creates.map((callEntry) => callEntry.role)).toEqual(["child", "parent"]);
-        expect(createdAgents).toMatchObject({
-          parentAgentId: "agt_parent_v1",
-          parentAgentVersion: 1,
-          childAgentId: "agt_child_v1",
-          childAgentVersion: 1,
-        });
-        expect(createdAgents.definitionHash).toMatch(/^[a-f0-9]{64}$/);
+          expect(calls.creates).toHaveLength(2);
+          expect(calls.updates).toHaveLength(0);
+          // Child first, then parent (parent's coordinator roster references the resolved child id+version).
+          expect(calls.creates.map((callEntry) => callEntry.role)).toEqual(["child", "parent"]);
+          expect(createdAgents).toMatchObject({
+            parentAgentId: "agt_parent_v1",
+            parentAgentVersion: 1,
+            childAgentId: "agt_child_v1",
+            childAgentVersion: 1,
+          });
+          expect(createdAgents.definitionHash).toMatch(/^[a-f0-9]{64}$/);
 
-        expect(readPersistedState(directoryPath)).toMatchObject({
-          parentAgentId: "agt_parent_v1",
-          parentAgentVersion: 1,
-          childAgentId: "agt_child_v1",
-          childAgentVersion: 1,
-          environmentId: "env_123",
-          definitionHash: createdAgents.definitionHash,
-        });
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: "agt_parent_v1",
+            parentAgentVersion: 1,
+            childAgentId: "agt_child_v1",
+            childAgentVersion: 1,
+            definitionHash: createdAgents.definitionHash,
+          });
+          expect(existsSync(stateFilePath(directoryPath))).toBe(false);
+        } finally {
+          harness.close();
+        }
       });
     } finally {
       cleanupTempDir(directoryPath);
@@ -115,49 +147,68 @@ describe("agent registry", () => {
     try {
       await withWorkingDirectory(directoryPath, async () => {
         const { client, calls } = createFakeAnthropic();
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
         const options = createEnsureAgentsOptions();
 
-        const firstResult = await ensureAgents(client, options);
-        const secondResult = await ensureAgents(client, options);
+        try {
+          const firstResult = await harness.ensureAgents(client, options);
+          const secondResult = await harness.ensureAgents(client, options);
 
-        expect(firstResult).toEqual(secondResult);
-        expect(calls.creates).toHaveLength(2);
-        expect(calls.updates).toHaveLength(0);
-        expect(readPersistedState(directoryPath)).toMatchObject({
-          parentAgentId: firstResult.parentAgentId,
-          childAgentId: firstResult.childAgentId,
-          definitionHash: firstResult.definitionHash,
-        });
+          expect(firstResult).toEqual(secondResult);
+          expect(calls.creates).toHaveLength(2);
+          expect(calls.updates).toHaveLength(0);
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: firstResult.parentAgentId,
+            childAgentId: firstResult.childAgentId,
+            definitionHash: firstResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
       });
     } finally {
       cleanupTempDir(directoryPath);
     }
   });
 
-  test("reuse: second call with same definitions refreshes the persisted environmentId", async () => {
+  test("migration: missing per-agent hashes update existing IDs instead of recreating", async () => {
     const directoryPath = createTempDir();
 
     try {
       await withWorkingDirectory(directoryPath, async () => {
         const { client, calls } = createFakeAnthropic();
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
 
-        const firstResult = await ensureAgents(client, createEnsureAgentsOptions());
-        const reusedResult = await ensureAgents(
-          client,
-          createEnsureAgentsOptions({ environmentId: "env_456" }),
-        );
+        try {
+          harness.db.setAgentRegistryState({
+            parentAgentId: "agt_parent_legacy",
+            parentAgentVersion: 3,
+            childAgentId: "agt_child_legacy",
+            childAgentVersion: 4,
+            definitionHash: "legacy-combined-hash",
+            parentDefinitionHash: null,
+            childDefinitionHash: null,
+            createdAt: "2026-04-23T00:00:00.000Z",
+          });
 
-        expect(reusedResult).toEqual(firstResult);
-        expect(calls.creates).toHaveLength(2);
-        expect(calls.updates).toHaveLength(0);
-        expect(readPersistedState(directoryPath)).toMatchObject({
-          parentAgentId: firstResult.parentAgentId,
-          childAgentId: firstResult.childAgentId,
-          environmentId: "env_456",
-          definitionHash: firstResult.definitionHash,
-        });
+          const result = await harness.ensureAgents(client, createEnsureAgentsOptions());
+
+          expect(calls.creates).toHaveLength(0);
+          expect(calls.updates.map((callEntry) => callEntry.role)).toEqual(["child", "parent"]);
+          expect(result).toMatchObject({
+            parentAgentId: "agt_parent_legacy",
+            childAgentId: "agt_child_legacy",
+          });
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: "agt_parent_legacy",
+            childAgentId: "agt_child_legacy",
+            parentDefinitionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            childDefinitionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+            definitionHash: result.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
       });
     } finally {
       cleanupTempDir(directoryPath);
@@ -171,38 +222,42 @@ describe("agent registry", () => {
     try {
       await withWorkingDirectory(directoryPath, async () => {
         const { client, calls } = createFakeAnthropic();
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
 
-        const firstResult = await ensureAgents(client, createEnsureAgentsOptions());
-        const updatedResult = await ensureAgents(
-          client,
-          createEnsureAgentsOptions({ parentPrompt: "Parent prompt v2" }),
-        );
+        try {
+          const firstResult = await harness.ensureAgents(client, createEnsureAgentsOptions());
+          const updatedResult = await harness.ensureAgents(
+            client,
+            createEnsureAgentsOptions({ parentPrompt: "Parent prompt v2" }),
+          );
 
-        expect(calls.creates).toHaveLength(2);
-        expect(calls.updates).toHaveLength(1);
-        expect(calls.updates[0]).toMatchObject({
-          agentId: firstResult.parentAgentId,
-          role: "parent",
-          params: {
-            version: 1,
-          },
-        });
-        expect(updatedResult).toMatchObject({
-          parentAgentId: firstResult.parentAgentId,
-          parentAgentVersion: 2,
-          childAgentId: firstResult.childAgentId,
-          childAgentVersion: firstResult.childAgentVersion,
-        });
-        expect(updatedResult.definitionHash).not.toBe(firstResult.definitionHash);
+          expect(calls.creates).toHaveLength(2);
+          expect(calls.updates).toHaveLength(1);
+          expect(calls.updates[0]).toMatchObject({
+            agentId: firstResult.parentAgentId,
+            role: "parent",
+            params: {
+              version: 1,
+            },
+          });
+          expect(updatedResult).toMatchObject({
+            parentAgentId: firstResult.parentAgentId,
+            parentAgentVersion: 2,
+            childAgentId: firstResult.childAgentId,
+            childAgentVersion: firstResult.childAgentVersion,
+          });
+          expect(updatedResult.definitionHash).not.toBe(firstResult.definitionHash);
 
-        expect(readPersistedState(directoryPath)).toMatchObject({
-          parentAgentId: firstResult.parentAgentId,
-          parentAgentVersion: 2,
-          childAgentId: firstResult.childAgentId,
-          childAgentVersion: 1,
-          definitionHash: updatedResult.definitionHash,
-        });
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: firstResult.parentAgentId,
+            parentAgentVersion: 2,
+            childAgentId: firstResult.childAgentId,
+            childAgentVersion: 1,
+            definitionHash: updatedResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
       });
     } finally {
       cleanupTempDir(directoryPath);
@@ -229,24 +284,28 @@ describe("agent registry", () => {
             };
           },
         });
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
         const baseOptions = createEnsureAgentsOptions();
 
-        const firstResult = await ensureAgents(client, baseOptions);
-        const recreatedResult = await ensureAgents(client, {
-          ...baseOptions,
-          forceRecreate: true,
-        });
+        try {
+          const firstResult = await harness.ensureAgents(client, baseOptions);
+          const recreatedResult = await harness.ensureAgents(client, {
+            ...baseOptions,
+            forceRecreate: true,
+          });
 
-        expect(calls.creates).toHaveLength(4);
-        expect(calls.updates).toHaveLength(0);
-        expect(recreatedResult.parentAgentId).not.toBe(firstResult.parentAgentId);
-        expect(recreatedResult.childAgentId).not.toBe(firstResult.childAgentId);
-        expect(readPersistedState(directoryPath)).toMatchObject({
-          parentAgentId: recreatedResult.parentAgentId,
-          childAgentId: recreatedResult.childAgentId,
-          definitionHash: recreatedResult.definitionHash,
-        });
+          expect(calls.creates).toHaveLength(4);
+          expect(calls.updates).toHaveLength(0);
+          expect(recreatedResult.parentAgentId).not.toBe(firstResult.parentAgentId);
+          expect(recreatedResult.childAgentId).not.toBe(firstResult.childAgentId);
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: recreatedResult.parentAgentId,
+            childAgentId: recreatedResult.childAgentId,
+            definitionHash: recreatedResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
       });
     } finally {
       cleanupTempDir(directoryPath);
@@ -260,36 +319,38 @@ describe("agent registry", () => {
     try {
       await withWorkingDirectory(directoryPath, async () => {
         const { client, calls } = createFakeAnthropic();
-        const { ensureAgents } = createRegistry();
+        const harness = createRegistryHarness();
         const sharedOptions = createEnsureAgentsOptions();
 
-        const concurrentResults = await Promise.all([
-          ensureAgents(client, sharedOptions),
-          ensureAgents(client, sharedOptions),
-          ensureAgents(client, sharedOptions),
-        ]);
-        const rawStateText = readFileSync(stateFilePath(directoryPath), "utf8");
+        try {
+          const concurrentResults = await Promise.all([
+            harness.ensureAgents(client, sharedOptions),
+            harness.ensureAgents(client, sharedOptions),
+            harness.ensureAgents(client, sharedOptions),
+          ]);
 
-        expect(calls.creates.filter((callEntry) => callEntry.role === "parent")).toHaveLength(1);
-        expect(calls.creates.filter((callEntry) => callEntry.role === "child")).toHaveLength(1);
-        expect(calls.updates).toHaveLength(0);
-        expect(() => JSON.parse(rawStateText)).not.toThrow();
+          expect(calls.creates.filter((callEntry) => callEntry.role === "parent")).toHaveLength(1);
+          expect(calls.creates.filter((callEntry) => callEntry.role === "child")).toHaveLength(1);
+          expect(calls.updates).toHaveLength(0);
 
-        const persistedState = JSON.parse(rawStateText) as AgentState & Record<string, unknown>;
-        const firstResult = concurrentResults[0];
+          const persistedState = readPersistedState(harness.db);
+          const firstResult = concurrentResults[0];
 
-        if (!firstResult) {
-          throw new Error("Expected at least one concurrent result");
+          if (!firstResult) {
+            throw new Error("Expected at least one concurrent result");
+          }
+
+          expect(concurrentResults).toEqual([firstResult, firstResult, firstResult]);
+          expect(persistedState).toMatchObject({
+            parentAgentId: firstResult.parentAgentId,
+            parentAgentVersion: firstResult.parentAgentVersion,
+            childAgentId: firstResult.childAgentId,
+            childAgentVersion: firstResult.childAgentVersion,
+            definitionHash: firstResult.definitionHash,
+          });
+        } finally {
+          harness.close();
         }
-
-        expect(concurrentResults).toEqual([firstResult, firstResult, firstResult]);
-        expect(persistedState).toMatchObject({
-          parentAgentId: firstResult.parentAgentId,
-          parentAgentVersion: firstResult.parentAgentVersion,
-          childAgentId: firstResult.childAgentId,
-          childAgentVersion: firstResult.childAgentVersion,
-          definitionHash: firstResult.definitionHash,
-        });
       });
     } finally {
       cleanupTempDir(directoryPath);

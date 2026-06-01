@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
-import type Anthropic from "@anthropic-ai/sdk";
 import type {
   AgentCreateParams,
   AgentUpdateParams,
@@ -10,7 +9,7 @@ import type { Config } from "@/shared/config";
 import { RUN_LOCK } from "@/shared/constants";
 import type { McpServer } from "@/shared/persistence/db";
 import { createStateModule } from "@/shared/state";
-import type { AgentState } from "@/shared/types";
+import type { AgentRegistryState, PersistedAgentRegistryState } from "@/shared/types";
 import { buildChildDefinition } from "./child";
 import { hashDefinition } from "./hash";
 import {
@@ -29,9 +28,9 @@ const LOCK_RETRY_OPTIONS = {
 
 type AgentRole = "parent" | "child";
 
-type PersistedAgentState = AgentState & {
-  childDefinitionHash: string;
-  parentDefinitionHash: string;
+export type AgentRegistryStateStore = {
+  readAgentRegistryState(): AgentRegistryState | null | Promise<AgentRegistryState | null>;
+  writeAgentRegistryState(state: PersistedAgentRegistryState): void | Promise<void>;
 };
 
 export type RegistryAnthropicClient = {
@@ -50,7 +49,6 @@ export type EnsureAgentsOptions = {
   cfg: Config;
   parentPrompt: string;
   childPrompt: string;
-  environmentId: string;
   /**
    * Custom (non-MCP) tools attached to the parent. MCP toolsets are built
    * from `mcpServers` server-side; do not include `mcp_toolset` entries
@@ -75,12 +73,31 @@ export type EnsureAgentsResult = {
   definitionHash: string;
 };
 
+export type EnsureAgents = (
+  client: RegistryAnthropicClient,
+  options: EnsureAgentsOptions,
+) => Promise<EnsureAgentsResult>;
+
 type RegistryDeps = {
   buildParent: typeof buildParentDefinition;
   buildChild: typeof buildChildDefinition;
   hash: typeof hashDefinition;
+  agentStateStore: AgentRegistryStateStore;
   stateModule: ReturnType<typeof createStateModule>;
 };
+
+type CreateRegistryDeps = Pick<RegistryDeps, "agentStateStore"> &
+  Partial<Omit<RegistryDeps, "agentStateStore">>;
+
+export function createDatabaseAgentRegistryStateStore(db: {
+  getAgentRegistryState(): AgentRegistryState | null;
+  setAgentRegistryState(state: AgentRegistryState): void;
+}): AgentRegistryStateStore {
+  return {
+    readAgentRegistryState: () => db.getAgentRegistryState(),
+    writeAgentRegistryState: (state) => db.setAgentRegistryState(state),
+  };
+}
 
 function hashCombinedDefinitions(
   parentDefinitionHash: string,
@@ -91,7 +108,7 @@ function hashCombinedDefinitions(
     .digest("hex");
 }
 
-function toEnsureAgentsResult(state: AgentState): EnsureAgentsResult {
+function toEnsureAgentsResult(state: AgentRegistryState): EnsureAgentsResult {
   return {
     parentAgentId: state.parentAgentId,
     parentAgentVersion: state.parentAgentVersion,
@@ -120,7 +137,7 @@ function toUpdateParams(definition: AgentCreateParams, version: number): AgentUp
   };
 }
 
-function readStoredDefinitionHash(state: AgentState, role: AgentRole): string | undefined {
+function readStoredDefinitionHash(state: AgentRegistryState, role: AgentRole): string | undefined {
   const key = role === "parent" ? "parentDefinitionHash" : "childDefinitionHash";
   const storedValue = (state as Record<string, unknown>)[key];
 
@@ -129,7 +146,6 @@ function readStoredDefinitionHash(state: AgentState, role: AgentRole): string | 
 
 function buildPersistedState(options: {
   createdAt: string;
-  environmentId: string;
   parentAgentId: string;
   parentAgentVersion: number;
   childAgentId: string;
@@ -137,13 +153,12 @@ function buildPersistedState(options: {
   definitionHash: string;
   parentDefinitionHash: string;
   childDefinitionHash: string;
-}): PersistedAgentState {
+}): PersistedAgentRegistryState {
   return {
     parentAgentId: options.parentAgentId,
     parentAgentVersion: options.parentAgentVersion,
     childAgentId: options.childAgentId,
     childAgentVersion: options.childAgentVersion,
-    environmentId: options.environmentId,
     definitionHash: options.definitionHash,
     createdAt: options.createdAt,
     parentDefinitionHash: options.parentDefinitionHash,
@@ -157,10 +172,6 @@ function createLockError(lockFilePath: string, error: unknown): Error {
   return new Error(`Failed to acquire run lock at ${lockFilePath}: ${message}`);
 }
 
-function shouldRefreshEnvironmentId(state: AgentState, environmentId: string): boolean {
-  return state.environmentId !== environmentId;
-}
-
 function buildCoordinatorRoster(
   childAgentId: string,
   childAgentVersion: number,
@@ -171,13 +182,14 @@ function buildCoordinatorRoster(
   };
 }
 
-export function createRegistry(deps: Partial<RegistryDeps> = {}) {
+export function createRegistry(deps: CreateRegistryDeps) {
+  const stateModule = deps.stateModule ?? createStateModule();
   const registryDeps: RegistryDeps = {
-    buildParent: buildParentDefinition,
-    buildChild: buildChildDefinition,
-    hash: hashDefinition,
-    stateModule: createStateModule(),
-    ...deps,
+    buildParent: deps.buildParent ?? buildParentDefinition,
+    buildChild: deps.buildChild ?? buildChildDefinition,
+    hash: deps.hash ?? hashDefinition,
+    agentStateStore: deps.agentStateStore,
+    stateModule,
   };
 
   /**
@@ -211,7 +223,7 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
         throw createLockError(lockFilePath, error);
       }
 
-      const existingState = await registryDeps.stateModule.readAgentState();
+      const existingState = await registryDeps.agentStateStore.readAgentRegistryState();
 
       if (options.forceRecreate === true || existingState === null) {
         const createdChild = await client.beta.agents.create(childDefinition);
@@ -230,7 +242,6 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
         const createdParent = await client.beta.agents.create(parentDefinition);
         const nextState = buildPersistedState({
           createdAt: new Date().toISOString(),
-          environmentId: options.environmentId,
           parentAgentId: createdParent.id,
           parentAgentVersion: createdParent.version,
           childAgentId: createdChild.id,
@@ -240,7 +251,7 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
           childDefinitionHash,
         });
 
-        await registryDeps.stateModule.writeAgentState(nextState);
+        await registryDeps.agentStateStore.writeAgentRegistryState(nextState);
 
         return toEnsureAgentsResult(nextState);
       }
@@ -276,34 +287,8 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
         childDefinitionHash,
       );
 
-      if (
-        existingState.definitionHash === combinedDefinitionHash &&
-        !childNeedsUpdate &&
-        !shouldRefreshEnvironmentId(existingState, options.environmentId)
-      ) {
+      if (existingState.definitionHash === combinedDefinitionHash && !childNeedsUpdate) {
         return toEnsureAgentsResult(existingState);
-      }
-
-      if (
-        existingState.definitionHash === combinedDefinitionHash &&
-        !childNeedsUpdate &&
-        shouldRefreshEnvironmentId(existingState, options.environmentId)
-      ) {
-        const refreshedState = buildPersistedState({
-          createdAt: existingState.createdAt,
-          environmentId: options.environmentId,
-          parentAgentId: existingState.parentAgentId,
-          parentAgentVersion: existingState.parentAgentVersion,
-          childAgentId: updatedChild.id,
-          childAgentVersion: updatedChild.version,
-          definitionHash: combinedDefinitionHash,
-          parentDefinitionHash,
-          childDefinitionHash,
-        });
-
-        await registryDeps.stateModule.writeAgentState(refreshedState);
-
-        return toEnsureAgentsResult(refreshedState);
       }
 
       const storedParentDefinitionHash = readStoredDefinitionHash(existingState, "parent");
@@ -324,7 +309,6 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
 
       const nextState = buildPersistedState({
         createdAt: existingState.createdAt,
-        environmentId: options.environmentId,
         parentAgentId: updatedParent.id,
         parentAgentVersion: updatedParent.version,
         childAgentId: updatedChild.id,
@@ -334,7 +318,7 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
         childDefinitionHash,
       });
 
-      await registryDeps.stateModule.writeAgentState(nextState);
+      await registryDeps.agentStateStore.writeAgentRegistryState(nextState);
 
       return toEnsureAgentsResult(nextState);
     } finally {
@@ -345,21 +329,4 @@ export function createRegistry(deps: Partial<RegistryDeps> = {}) {
   }
 
   return { ensureAgents };
-}
-
-const defaultRegistry = createRegistry();
-
-export function ensureAgents(
-  client: Anthropic,
-  options: EnsureAgentsOptions,
-): Promise<EnsureAgentsResult>;
-export function ensureAgents(
-  client: RegistryAnthropicClient,
-  options: EnsureAgentsOptions,
-): Promise<EnsureAgentsResult>;
-export function ensureAgents(
-  client: Anthropic | RegistryAnthropicClient,
-  options: EnsureAgentsOptions,
-): Promise<EnsureAgentsResult> {
-  return defaultRegistry.ensureAgents(client, options);
 }
