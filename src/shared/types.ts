@@ -34,6 +34,19 @@ export type PersistedAgentRegistryState = AgentRegistryState & {
   childDefinitionHash: string;
 };
 
+export type SystemSkillKey = "github_operations";
+
+export type SystemSkillState = {
+  key: SystemSkillKey;
+  skillId: string;
+  skillVersion: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+export type PersistedSystemSkillState = Omit<SystemSkillState, "updatedAt">;
+
 export type DefaultEnvironmentState = {
   environmentId: string;
   definitionHash: string;

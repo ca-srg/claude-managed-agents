@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import type { BetaManagedAgentsSkillParams } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 
 import { PARENT_CUSTOM_TOOLS } from "@/parent-tools";
 import { buildChildDefinition } from "@/shared/agents/child";
@@ -40,13 +38,15 @@ const GITHUB_MCP_SERVER: McpServer = {
   updatedAt: "2025-01-01T00:00:00.000Z",
 };
 
+const SYSTEM_SKILLS: BetaManagedAgentsSkillParams[] = [
+  { skill_id: "skill_github_ops", type: "custom", version: "1700000000000000" },
+];
+
 async function loadGolden(): Promise<{ parent: string; child: string }> {
-  const goldenPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "../.sisyphus/evidence/hash-golden.json",
-  );
-  const raw = await readFile(goldenPath, "utf8");
-  return JSON.parse(raw) as { parent: string; child: string };
+  return {
+    child: "0e4cecc508c2359690a9ca69c9b4f0079f9477f8fa328be1fc4bc6cc32f9529f",
+    parent: "16e99120302ef691b5738c77755af7cc55e37b6dee1bb6bac88954c9c975e16f",
+  };
 }
 
 describe("parent tools composition", () => {
@@ -90,6 +90,7 @@ describe("hash-stability", () => {
       { parent: GENERIC_PARENT_AGENT_PROMPT },
       PARENT_CUSTOM_TOOLS,
       [GITHUB_MCP_SERVER],
+      SYSTEM_SKILLS,
       {
         agents: [{ id: "agt-child", type: "agent", version: 1 }],
         type: "coordinator",
@@ -105,6 +106,7 @@ describe("hash-stability", () => {
       TEST_CONFIG,
       { child: GENERIC_CHILD_AGENT_PROMPT },
       [GITHUB_MCP_SERVER],
+      SYSTEM_SKILLS,
     );
 
     expect(hashDefinition(childDef)).toBe(golden.child);

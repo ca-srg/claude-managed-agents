@@ -571,6 +571,30 @@ describe("createDbModule", () => {
     });
   });
 
+  test("system skill state round-trips through SQLite", () => {
+    expect(dbModule.getSystemSkillState("github_operations")).toBeNull();
+
+    dbModule.setSystemSkillState({
+      contentHash: "skill-content-hash-v1",
+      createdAt: "2026-04-24T00:00:00.000Z",
+      key: "github_operations",
+      skillId: "skill_github_ops",
+      skillVersion: "1700000000000000",
+    });
+
+    const persistedState = dbModule.getSystemSkillState("github_operations");
+
+    expect(typeof persistedState?.updatedAt).toBe("string");
+    expect(persistedState).toEqual({
+      contentHash: "skill-content-hash-v1",
+      createdAt: "2026-04-24T00:00:00.000Z",
+      key: "github_operations",
+      skillId: "skill_github_ops",
+      skillVersion: "1700000000000000",
+      updatedAt: persistedState?.updatedAt,
+    });
+  });
+
   test("default environment state round-trips and updates in place", () => {
     expect(dbModule.getDefaultEnvironmentState()).toBeNull();
 

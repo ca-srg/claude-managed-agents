@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Config } from "@/shared/config";
 import { createDbModule } from "@/shared/persistence/db";
 import { createFakeAnthropic } from "../../../../test/fixtures/fake-anthropic";
+import { GITHUB_OPERATIONS_SKILL_KEY, hashGitHubOperationsSkill } from "../github-operations-skill";
 import {
   createDatabaseAgentRegistryStateStore,
   createRegistry,
@@ -111,6 +112,8 @@ describe("agent registry", () => {
         try {
           const createdAgents = await harness.ensureAgents(client, createEnsureAgentsOptions());
 
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(2);
           expect(calls.updates).toHaveLength(0);
           // Child first, then parent (parent's coordinator roster references the resolved child id+version).
@@ -122,6 +125,16 @@ describe("agent registry", () => {
             childAgentVersion: 1,
           });
           expect(createdAgents.definitionHash).toMatch(/^[a-f0-9]{64}$/);
+          expect(calls.creates.every((callEntry) => callEntry.params.skills?.length === 1)).toBe(
+            true,
+          );
+          expect(calls.creates[0]?.params.skills).toEqual([
+            {
+              skill_id: "skill_github_ops_1",
+              type: "custom",
+              version: "1700000000000001",
+            },
+          ]);
 
           expect(readPersistedState(harness.db)).toMatchObject({
             parentAgentId: "agt_parent_v1",
@@ -129,6 +142,12 @@ describe("agent registry", () => {
             childAgentId: "agt_child_v1",
             childAgentVersion: 1,
             definitionHash: createdAgents.definitionHash,
+          });
+          expect(harness.db.getSystemSkillState(GITHUB_OPERATIONS_SKILL_KEY)).toMatchObject({
+            contentHash: hashGitHubOperationsSkill(),
+            key: GITHUB_OPERATIONS_SKILL_KEY,
+            skillId: "skill_github_ops_1",
+            skillVersion: "1700000000000001",
           });
           expect(existsSync(stateFilePath(directoryPath))).toBe(false);
         } finally {
@@ -155,6 +174,8 @@ describe("agent registry", () => {
           const secondResult = await harness.ensureAgents(client, options);
 
           expect(firstResult).toEqual(secondResult);
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(2);
           expect(calls.updates).toHaveLength(0);
           expect(readPersistedState(harness.db)).toMatchObject({
@@ -193,6 +214,8 @@ describe("agent registry", () => {
 
           const result = await harness.ensureAgents(client, createEnsureAgentsOptions());
 
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(0);
           expect(calls.updates.map((callEntry) => callEntry.role)).toEqual(["child", "parent"]);
           expect(result).toMatchObject({
@@ -231,6 +254,8 @@ describe("agent registry", () => {
             createEnsureAgentsOptions({ parentPrompt: "Parent prompt v2" }),
           );
 
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(2);
           expect(calls.updates).toHaveLength(1);
           expect(calls.updates[0]).toMatchObject({
@@ -254,6 +279,52 @@ describe("agent registry", () => {
             childAgentId: firstResult.childAgentId,
             childAgentVersion: 1,
             definitionHash: updatedResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
+  test("system skill change creates a new skill version and pins agents to it", async () => {
+    const directoryPath = createTempDir();
+
+    try {
+      await withWorkingDirectory(directoryPath, async () => {
+        const { client, calls } = createFakeAnthropic();
+        const harness = createRegistryHarness();
+
+        try {
+          harness.db.setSystemSkillState({
+            contentHash: "old-skill-hash",
+            createdAt: "2026-04-23T00:00:00.000Z",
+            key: GITHUB_OPERATIONS_SKILL_KEY,
+            skillId: "skill_existing_github_ops",
+            skillVersion: "1600000000000000",
+          });
+
+          await harness.ensureAgents(client, createEnsureAgentsOptions());
+
+          expect(calls.skillCreates).toHaveLength(0);
+          expect(calls.skillVersionCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates[0]?.skillId).toBe("skill_existing_github_ops");
+          expect(calls.creates.every((callEntry) => callEntry.params.skills?.length === 1)).toBe(
+            true,
+          );
+          expect(calls.creates[0]?.params.skills).toEqual([
+            {
+              skill_id: "skill_existing_github_ops",
+              type: "custom",
+              version: "1700000000000011",
+            },
+          ]);
+          expect(harness.db.getSystemSkillState(GITHUB_OPERATIONS_SKILL_KEY)).toMatchObject({
+            contentHash: hashGitHubOperationsSkill(),
+            skillId: "skill_existing_github_ops",
+            skillVersion: "1700000000000011",
           });
         } finally {
           harness.close();
@@ -294,6 +365,8 @@ describe("agent registry", () => {
             forceRecreate: true,
           });
 
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(4);
           expect(calls.updates).toHaveLength(0);
           expect(recreatedResult.parentAgentId).not.toBe(firstResult.parentAgentId);
@@ -329,6 +402,8 @@ describe("agent registry", () => {
             harness.ensureAgents(client, sharedOptions),
           ]);
 
+          expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates.filter((callEntry) => callEntry.role === "parent")).toHaveLength(1);
           expect(calls.creates.filter((callEntry) => callEntry.role === "child")).toHaveLength(1);
           expect(calls.updates).toHaveLength(0);

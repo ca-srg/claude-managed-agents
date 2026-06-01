@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AgentCreateParams,
   BetaManagedAgentsCustomToolParams,
+  BetaManagedAgentsSkillParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 import type { Config } from "@/shared/config";
 import { BUILTIN_GITHUB_MCP_TOKEN_ENV } from "@/shared/constants";
@@ -59,6 +60,10 @@ const TEST_MULTIAGENT: ParentMultiagentRoster = {
   type: "coordinator",
 };
 
+const TEST_SYSTEM_SKILLS: BetaManagedAgentsSkillParams[] = [
+  { skill_id: "skill_github_ops", type: "custom", version: "1700000000000000" },
+];
+
 function assertAgentCreateParams(definition: AgentCreateParams): AgentCreateParams {
   return definition;
 }
@@ -71,6 +76,7 @@ describe("buildParentDefinition", () => {
         { parent: "x" },
         TEST_CUSTOM_TOOLS,
         [GITHUB_MCP_SERVER],
+        TEST_SYSTEM_SKILLS,
         TEST_MULTIAGENT,
       ),
     );
@@ -90,6 +96,7 @@ describe("buildParentDefinition", () => {
       { parent: "x" },
       TEST_CUSTOM_TOOLS,
       [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
       TEST_MULTIAGENT,
     );
     const parentTools = parentDefinition.tools ?? [];
@@ -111,12 +118,26 @@ describe("buildParentDefinition", () => {
     expect(githubMcpTools).toHaveLength(1);
   });
 
+  test("attaches system-managed skills to the parent definition", () => {
+    const parentDefinition = buildParentDefinition(
+      TEST_CONFIG,
+      { parent: "x" },
+      TEST_CUSTOM_TOOLS,
+      [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
+      TEST_MULTIAGENT,
+    );
+
+    expect(parentDefinition.skills).toEqual(TEST_SYSTEM_SKILLS);
+  });
+
   test("defines exactly one github MCP server with the expected URL", () => {
     const parentDefinition = buildParentDefinition(
       TEST_CONFIG,
       { parent: "x" },
       TEST_CUSTOM_TOOLS,
       [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
       TEST_MULTIAGENT,
     );
     const githubServers = (parentDefinition.mcp_servers ?? []).filter(
@@ -139,6 +160,7 @@ describe("buildParentDefinition", () => {
         { parent: "x" },
         TEST_CUSTOM_TOOLS,
         [{ ...GITHUB_MCP_SERVER, permissionPolicy: "always_ask" }],
+        TEST_SYSTEM_SKILLS,
         TEST_MULTIAGENT,
       ),
     ).toThrow(/tool confirmations are not implemented/);
@@ -150,6 +172,7 @@ describe("buildParentDefinition", () => {
       { parent: "x" },
       TEST_CUSTOM_TOOLS,
       [{ ...GITHUB_MCP_SERVER, enabled: false }],
+      TEST_SYSTEM_SKILLS,
       TEST_MULTIAGENT,
     );
 

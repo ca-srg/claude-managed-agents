@@ -2,6 +2,11 @@ import type {
   AgentCreateParams,
   AgentUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
+import type { SkillCreateParams, SkillCreateResponse } from "@anthropic-ai/sdk/resources/beta/skills/skills";
+import type {
+  VersionCreateParams,
+  VersionCreateResponse,
+} from "@anthropic-ai/sdk/resources/beta/skills/versions";
 
 export type RegistryAnthropicClient = {
   beta: {
@@ -12,11 +17,19 @@ export type RegistryAnthropicClient = {
         params: AgentUpdateParams,
       ): PromiseLike<{ id: string; version: number }>;
     };
+    skills: {
+      create(params: SkillCreateParams): PromiseLike<SkillCreateResponse>;
+      versions: {
+        create(skillId: string, params: VersionCreateParams): PromiseLike<VersionCreateResponse>;
+      };
+    };
   };
 };
 
 export type FakeClientCalls = {
   creates: Array<{ params: AgentCreateParams; role: "parent" | "child" }>;
+  skillCreates: Array<{ params: SkillCreateParams }>;
+  skillVersionCreates: Array<{ params: VersionCreateParams; skillId: string }>;
   updates: Array<{
     agentId: string;
     params: AgentUpdateParams;
@@ -26,6 +39,8 @@ export type FakeClientCalls = {
 
 type CreateOverride = {
   createResponse?: (role: "parent" | "child") => { id: string; version: number };
+  skillCreateResponse?: (params: SkillCreateParams) => SkillCreateResponse;
+  skillVersionCreateResponse?: (skillId: string, params: VersionCreateParams) => VersionCreateResponse;
 };
 
 const DEFAULT_AGENT_NAMES = {
@@ -72,6 +87,8 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
 } {
   const calls: FakeClientCalls = {
     creates: [],
+    skillCreates: [],
+    skillVersionCreates: [],
     updates: [],
   };
   const createCounts = {
@@ -80,6 +97,8 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
   };
   const versionsByAgentId = new Map<string, number>();
   const rolesByAgentId = new Map<string, "parent" | "child">();
+  let skillCreateCount = 0;
+  let skillVersionCreateCount = 0;
 
   const client: RegistryAnthropicClient = {
     beta: {
@@ -113,6 +132,45 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
             id: agentId,
             version: nextVersion,
           };
+        },
+      },
+      skills: {
+        async create(params) {
+          calls.skillCreates.push({ params });
+          skillCreateCount += 1;
+
+          return (
+            overrides.skillCreateResponse?.(params) ??
+            ({
+              created_at: "2026-06-01T00:00:00.000Z",
+              display_title: params.display_title ?? null,
+              id: `skill_github_ops_${skillCreateCount}`,
+              latest_version: `170000000000000${skillCreateCount}`,
+              source: "custom",
+              type: "skill",
+              updated_at: "2026-06-01T00:00:00.000Z",
+            } satisfies SkillCreateResponse)
+          );
+        },
+        versions: {
+          async create(skillId, params) {
+            calls.skillVersionCreates.push({ params, skillId });
+            skillVersionCreateCount += 1;
+
+            return (
+              overrides.skillVersionCreateResponse?.(skillId, params) ??
+              ({
+                created_at: "2026-06-01T00:00:00.000Z",
+                description: "GitHub App GitHub Operations",
+                directory: "github-app-github-operations",
+                id: `skillver_github_ops_${skillVersionCreateCount}`,
+                name: "github-app-github-operations",
+                skill_id: skillId,
+                type: "skill_version",
+                version: `170000000000001${skillVersionCreateCount}`,
+              } satisfies VersionCreateResponse)
+            );
+          },
         },
       },
     },

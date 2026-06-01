@@ -2,6 +2,7 @@ import type {
   AgentCreateParams,
   BetaManagedAgentsCustomToolInputSchema,
   BetaManagedAgentsCustomToolParams,
+  BetaManagedAgentsSkillParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 
 import { toEnabledMcpServerParams, toEnabledMcpToolsetParams } from "@/shared/agents/mcp";
@@ -88,6 +89,7 @@ export function buildParentDefinition(
   prompts: { parent: string },
   customTools: ParentCustomTools,
   mcpServers: ReadonlyArray<McpServer>,
+  systemSkills: ReadonlyArray<BetaManagedAgentsSkillParams>,
   multiagent: ParentMultiagentRoster,
 ): AgentCreateParams {
   const mcpServerParams = toEnabledMcpServerParams(mcpServers);
@@ -99,6 +101,7 @@ export function buildParentDefinition(
       "Coordinator that decomposes a GitHub issue, delegates implementation to sub-agents, and finalizes the resulting PR.",
     model: cfg.models.parent,
     system: prompts.parent,
+    skills: [...systemSkills],
     mcp_servers: mcpServerParams,
     tools: [...mcpToolsetParams, ...customTools],
     metadata: PARENT_METADATA,

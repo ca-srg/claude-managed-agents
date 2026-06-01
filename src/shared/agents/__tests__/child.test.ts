@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AgentCreateParams } from "@anthropic-ai/sdk/resources/beta/agents/agents";
+import type {
+  AgentCreateParams,
+  BetaManagedAgentsSkillParams,
+} from "@anthropic-ai/sdk/resources/beta/agents/agents";
 
 import type { Config } from "@/shared/config";
 import { BUILTIN_GITHUB_MCP_TOKEN_ENV } from "@/shared/constants";
@@ -37,6 +40,10 @@ const GITHUB_MCP_SERVER: McpServer = {
   updatedAt: "2025-01-01T00:00:00.000Z",
 };
 
+const TEST_SYSTEM_SKILLS: BetaManagedAgentsSkillParams[] = [
+  { skill_id: "skill_github_ops", type: "custom", version: "1700000000000000" },
+];
+
 function assertAgentCreateParams(definition: AgentCreateParams): AgentCreateParams {
   return definition;
 }
@@ -44,7 +51,7 @@ function assertAgentCreateParams(definition: AgentCreateParams): AgentCreatePara
 describe("buildChildDefinition", () => {
   test("returns AgentCreateParams without a thinking field and with metadata tags", () => {
     const childDefinition = assertAgentCreateParams(
-      buildChildDefinition(TEST_CONFIG, { child: "x" }, [GITHUB_MCP_SERVER]),
+      buildChildDefinition(TEST_CONFIG, { child: "x" }, [GITHUB_MCP_SERVER], TEST_SYSTEM_SKILLS),
     );
 
     expect("thinking" in childDefinition).toBe(false);
@@ -57,9 +64,12 @@ describe("buildChildDefinition", () => {
   });
 
   test("includes exactly one built-in agent toolset, one github MCP toolset, and no custom tools", () => {
-    const childDefinition: AgentCreateParams = buildChildDefinition(TEST_CONFIG, { child: "x" }, [
-      GITHUB_MCP_SERVER,
-    ]);
+    const childDefinition: AgentCreateParams = buildChildDefinition(
+      TEST_CONFIG,
+      { child: "x" },
+      [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
+    );
     const childTools = childDefinition.tools ?? [];
     const agentToolsets = childTools.filter(
       (toolEntry) => toolEntry.type === "agent_toolset_20260401",
@@ -74,8 +84,24 @@ describe("buildChildDefinition", () => {
     expect(customTools).toHaveLength(0);
   });
 
+  test("attaches system-managed skills to the child definition", () => {
+    const childDefinition = buildChildDefinition(
+      TEST_CONFIG,
+      { child: "x" },
+      [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
+    );
+
+    expect(childDefinition.skills).toEqual(TEST_SYSTEM_SKILLS);
+  });
+
   test("defines exactly one github MCP server with the expected URL", () => {
-    const childDefinition = buildChildDefinition(TEST_CONFIG, { child: "x" }, [GITHUB_MCP_SERVER]);
+    const childDefinition = buildChildDefinition(
+      TEST_CONFIG,
+      { child: "x" },
+      [GITHUB_MCP_SERVER],
+      TEST_SYSTEM_SKILLS,
+    );
     const githubServers = (childDefinition.mcp_servers ?? []).filter(
       (serverEntry) => serverEntry.name === "github",
     );
@@ -90,9 +116,12 @@ describe("buildChildDefinition", () => {
   });
 
   test("disabled MCP servers are filtered out of mcp_servers and tools", () => {
-    const childDefinition = buildChildDefinition(TEST_CONFIG, { child: "x" }, [
-      { ...GITHUB_MCP_SERVER, enabled: false },
-    ]);
+    const childDefinition = buildChildDefinition(
+      TEST_CONFIG,
+      { child: "x" },
+      [{ ...GITHUB_MCP_SERVER, enabled: false }],
+      TEST_SYSTEM_SKILLS,
+    );
 
     expect(childDefinition.mcp_servers ?? []).toHaveLength(0);
     const mcpToolsets = (childDefinition.tools ?? []).filter(

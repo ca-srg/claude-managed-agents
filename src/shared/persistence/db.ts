@@ -71,6 +71,8 @@ import {
   SessionResultSchema,
   SessionUsageRowSchema,
   SubIssueSchema,
+  SystemSkillKeySchema,
+  SystemSkillStateSchema,
   type UsageAggregate,
   UsageAggregateSchema,
 } from "@/shared/persistence/schemas";
@@ -91,6 +93,8 @@ import type {
   RunState,
   RunStatus,
   RunSummary,
+  SystemSkillKey,
+  SystemSkillState,
 } from "@/shared/types";
 
 type DbLogger = Pick<ReturnType<typeof createLogger>, "warn">;
@@ -276,6 +280,14 @@ const SCHEMA_SQL = `
     definition_hash TEXT NOT NULL,
     parent_definition_hash TEXT,
     child_definition_hash TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS system_skill_state (
+    key TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    skill_version TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -649,6 +661,15 @@ type AgentRegistryStateDbRow = {
   updatedAt: string;
 };
 
+type SystemSkillStateDbRow = {
+  key: string;
+  skillId: string;
+  skillVersion: string;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type DefaultEnvironmentStateDbRow = {
   environmentId: string;
   definitionHash: string;
@@ -810,6 +831,11 @@ type PreparedStatements = {
   upsertAgentRegistryState: StatementLike<
     unknown,
     [string, number, string, number, string, string | null, string | null, string, string]
+  >;
+  getSystemSkillState: StatementLike<SystemSkillStateDbRow, [SystemSkillKey]>;
+  upsertSystemSkillState: StatementLike<
+    unknown,
+    [SystemSkillKey, string, string, string, string, string]
   >;
   getDefaultEnvironmentState: StatementLike<DefaultEnvironmentStateDbRow, []>;
   upsertDefaultEnvironmentState: StatementLike<unknown, [string, string, string, string]>;
@@ -2207,6 +2233,33 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            definition_hash = excluded.definition_hash,
            parent_definition_hash = excluded.parent_definition_hash,
            child_definition_hash = excluded.child_definition_hash,
+           created_at = excluded.created_at,
+           updated_at = excluded.updated_at`,
+      ),
+      getSystemSkillState: db.query<SystemSkillStateDbRow, [SystemSkillKey]>(
+        `SELECT
+           key,
+           skill_id AS skillId,
+           skill_version AS skillVersion,
+           content_hash AS contentHash,
+           created_at AS createdAt,
+           updated_at AS updatedAt
+         FROM system_skill_state
+         WHERE key = ?1`,
+      ),
+      upsertSystemSkillState: db.query(
+        `INSERT INTO system_skill_state (
+           key,
+           skill_id,
+           skill_version,
+           content_hash,
+           created_at,
+           updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(key) DO UPDATE SET
+           skill_id = excluded.skill_id,
+           skill_version = excluded.skill_version,
+           content_hash = excluded.content_hash,
            created_at = excluded.created_at,
            updated_at = excluded.updated_at`,
       ),
@@ -3671,6 +3724,10 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     return AgentRegistryStateSchema.parse(row);
   }
 
+  function parseSystemSkillStateRow(row: SystemSkillStateDbRow): SystemSkillState {
+    return SystemSkillStateSchema.parse(row);
+  }
+
   function parseDefaultEnvironmentStateRow(
     row: DefaultEnvironmentStateDbRow,
   ): DefaultEnvironmentState {
@@ -3861,6 +3918,29 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
       parsed.definitionHash,
       parsed.parentDefinitionHash,
       parsed.childDefinitionHash,
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
+  }
+
+  function getSystemSkillState(key: SystemSkillKey): SystemSkillState | null {
+    const parsedKey = SystemSkillKeySchema.parse(key);
+    const row = getRuntime().statements.getSystemSkillState.get(parsedKey);
+    return row == null ? null : parseSystemSkillStateRow(row);
+  }
+
+  function setSystemSkillState(input: Omit<SystemSkillState, "updatedAt">): void {
+    const now = new Date().toISOString();
+    const parsed = SystemSkillStateSchema.parse({
+      ...input,
+      updatedAt: now,
+    });
+
+    getRuntime().statements.upsertSystemSkillState.run(
+      parsed.key,
+      parsed.skillId,
+      parsed.skillVersion,
+      parsed.contentHash,
       parsed.createdAt,
       parsed.updatedAt,
     );
@@ -4077,6 +4157,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     getSessionsByRun,
     getSessionUsageBySession,
     getSessionUsagesByRun,
+    getSystemSkillState,
     addPolledRepository,
     getPolledRepository,
     getSubIssuesByRun,
@@ -4120,6 +4201,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     setRunPhase,
     setRunStatus,
     setRunStatusIfCurrent,
+    setSystemSkillState,
     updateMcpServer,
   };
 }
