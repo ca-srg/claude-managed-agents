@@ -133,6 +133,10 @@ describe("agent registry", () => {
           const createdAgents = await harness.ensureAgents(client, createEnsureAgentsOptions());
 
           expect(calls.skillCreates).toHaveLength(1);
+          expect(calls.skillCreates[0]?.params.files).toHaveLength(1);
+          expect(
+            (calls.skillCreates[0]?.params.files?.[0] as { name?: string } | undefined)?.name,
+          ).toBe("SKILL.md");
           expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(2);
           expect(calls.updates).toHaveLength(0);
@@ -230,6 +234,11 @@ describe("agent registry", () => {
           expect(calls.skillCreates).toHaveLength(0);
           expect(calls.skillVersionCreates).toHaveLength(1);
           expect(calls.skillVersionCreates[0]?.skillId).toBe("skill_remote_github_ops");
+          expect(calls.skillVersionCreates[0]?.params.files).toHaveLength(1);
+          expect(
+            (calls.skillVersionCreates[0]?.params.files?.[0] as { name?: string } | undefined)
+              ?.name,
+          ).toBe("SKILL.md");
           expect(calls.creates[0]?.params.skills).toEqual([
             {
               skill_id: "skill_remote_github_ops",

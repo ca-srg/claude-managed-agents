@@ -7,8 +7,7 @@ export const GITHUB_OPERATIONS_SKILL_KEY = "github_operations";
 
 export const GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE = "GitHub App GitHub Operations";
 
-const GITHUB_OPERATIONS_SKILL_DIRECTORY = "github-app-github-operations";
-const GITHUB_OPERATIONS_SKILL_FILE_NAME = `${GITHUB_OPERATIONS_SKILL_DIRECTORY}/SKILL.md`;
+const GITHUB_OPERATIONS_SKILL_FILE_NAME = "SKILL.md";
 
 export const GITHUB_OPERATIONS_SKILL_MARKDOWN = `---
 name: github-app-github-operations
