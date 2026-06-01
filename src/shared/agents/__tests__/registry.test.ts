@@ -136,7 +136,7 @@ describe("agent registry", () => {
           expect(calls.skillCreates[0]?.params.files).toHaveLength(1);
           expect(
             (calls.skillCreates[0]?.params.files?.[0] as { name?: string } | undefined)?.name,
-          ).toBe("SKILL.md");
+          ).toBe("github-app-github-operations/SKILL.md");
           expect(calls.skillVersionCreates).toHaveLength(0);
           expect(calls.creates).toHaveLength(2);
           expect(calls.updates).toHaveLength(0);
@@ -238,7 +238,13 @@ describe("agent registry", () => {
           expect(
             (calls.skillVersionCreates[0]?.params.files?.[0] as { name?: string } | undefined)
               ?.name,
-          ).toBe("SKILL.md");
+          ).toBe("github-app-github-operations/SKILL.md");
+          expect(calls.skillVersionCreates[0]?.path).toBe(
+            "/v1/skills/skill_remote_github_ops/versions?beta=true",
+          );
+          expect(calls.skillVersionCreates[0]?.headers).toMatchObject({
+            "anthropic-beta": "skills-2025-10-02",
+          });
           expect(calls.creates[0]?.params.skills).toEqual([
             {
               skill_id: "skill_remote_github_ops",
@@ -428,6 +434,10 @@ describe("agent registry", () => {
           expect(calls.skillCreates).toHaveLength(0);
           expect(calls.skillVersionCreates).toHaveLength(1);
           expect(calls.skillVersionCreates[0]?.skillId).toBe("skill_existing_github_ops");
+          expect(
+            (calls.skillVersionCreates[0]?.params.files?.[0] as { name?: string } | undefined)
+              ?.name,
+          ).toBe("github-app-github-operations/SKILL.md");
           expect(calls.creates.every((callEntry) => callEntry.params.skills?.length === 1)).toBe(
             true,
           );

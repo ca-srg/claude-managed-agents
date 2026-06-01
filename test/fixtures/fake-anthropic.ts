@@ -14,6 +14,10 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/skills/versions";
 
 export type RegistryAnthropicClient = {
+  post<Response>(
+    path: string,
+    options: { body: FormData; headers: Record<string, string> },
+  ): PromiseLike<Response>;
   beta: {
     agents: {
       create(params: AgentCreateParams): PromiseLike<{ id: string; version: number }>;
@@ -36,7 +40,12 @@ export type FakeClientCalls = {
   creates: Array<{ params: AgentCreateParams; role: "parent" | "child" }>;
   skillCreates: Array<{ params: SkillCreateParams }>;
   skillLists: Array<{ params: SkillListParams | null | undefined }>;
-  skillVersionCreates: Array<{ params: VersionCreateParams; skillId: string }>;
+  skillVersionCreates: Array<{
+    headers?: Record<string, string>;
+    params: VersionCreateParams;
+    path?: string;
+    skillId: string;
+  }>;
   updates: Array<{
     agentId: string;
     params: AgentUpdateParams;
@@ -101,6 +110,33 @@ function toAsyncIterable<T>(items: Iterable<T> | AsyncIterable<T>): AsyncIterabl
   };
 }
 
+function versionCreateParamsFromBody(body: FormData): VersionCreateParams {
+  return {
+    files: body.getAll("files[]").filter((value): value is File => value instanceof File),
+  };
+}
+
+function createSkillVersionResponse(
+  skillId: string,
+  params: VersionCreateParams,
+  count: number,
+  overrides: CreateOverride,
+): VersionCreateResponse {
+  return (
+    overrides.skillVersionCreateResponse?.(skillId, params) ??
+    ({
+      created_at: "2026-06-01T00:00:00.000Z",
+      description: "GitHub App GitHub Operations",
+      directory: "github-app-github-operations",
+      id: `skillver_github_ops_${count}`,
+      name: "github-app-github-operations",
+      skill_id: skillId,
+      type: "skill_version",
+      version: `170000000000001${count}`,
+    } satisfies VersionCreateResponse)
+  );
+}
+
 export function createFakeAnthropic(overrides: CreateOverride = {}): {
   client: RegistryAnthropicClient;
   calls: FakeClientCalls;
@@ -122,6 +158,28 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
   let skillVersionCreateCount = 0;
 
   const client: RegistryAnthropicClient = {
+    async post<Response>(
+      path: string,
+      options: { body: FormData; headers: Record<string, string> },
+    ) {
+      const match = path.match(/^\/v1\/skills\/([^/]+)\/versions\?beta=true$/);
+
+      if (match === null) {
+        throw new Error(`Unexpected POST path: ${path}`);
+      }
+
+      const skillId = decodeURIComponent(match[1] ?? "");
+      const params = versionCreateParamsFromBody(options.body);
+      calls.skillVersionCreates.push({ headers: options.headers, params, path, skillId });
+      skillVersionCreateCount += 1;
+
+      return createSkillVersionResponse(
+        skillId,
+        params,
+        skillVersionCreateCount,
+        overrides,
+      ) as Response;
+    },
     beta: {
       agents: {
         async create(params) {
@@ -183,19 +241,7 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
             calls.skillVersionCreates.push({ params, skillId });
             skillVersionCreateCount += 1;
 
-            return (
-              overrides.skillVersionCreateResponse?.(skillId, params) ??
-              ({
-                created_at: "2026-06-01T00:00:00.000Z",
-                description: "GitHub App GitHub Operations",
-                directory: "github-app-github-operations",
-                id: `skillver_github_ops_${skillVersionCreateCount}`,
-                name: "github-app-github-operations",
-                skill_id: skillId,
-                type: "skill_version",
-                version: `170000000000001${skillVersionCreateCount}`,
-              } satisfies VersionCreateResponse)
-            );
+            return createSkillVersionResponse(skillId, params, skillVersionCreateCount, overrides);
           },
         },
       },

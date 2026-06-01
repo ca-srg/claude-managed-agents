@@ -49,7 +49,14 @@ const LOCK_RETRY_OPTIONS = {
   randomize: false,
 } as const;
 
+const SKILLS_BETA_HEADER_VALUE = "skills-2025-10-02";
+
 type AgentRole = "parent" | "child";
+
+type MultipartPostOptions = {
+  body: FormData;
+  headers: Record<string, string>;
+};
 
 export type AgentRegistryStateStore = {
   readAgentRegistryState(): AgentRegistryState | null | Promise<AgentRegistryState | null>;
@@ -61,6 +68,7 @@ export type AgentRegistryStateStore = {
 };
 
 export type RegistryAnthropicClient = {
+  post<Response>(path: string, options: MultipartPostOptions): PromiseLike<Response>;
   beta: {
     agents: {
       create(params: AgentCreateParams): PromiseLike<{ id: string; version: number }>;
@@ -261,14 +269,35 @@ async function findGitHubOperationsSystemSkill(
   return null;
 }
 
+function buildSkillUploadForm(files: NonNullable<SkillCreateParams["files"]>): FormData {
+  const form = new FormData();
+
+  for (const file of files) {
+    if (!(file instanceof Blob)) {
+      throw new TypeError("GitHub operations skill uploads must be File or Blob instances");
+    }
+
+    const uploadName = (file as { name?: unknown }).name;
+    const fileName =
+      typeof uploadName === "string" && uploadName.length > 0 ? uploadName : undefined;
+    form.append("files[]", file, fileName);
+  }
+
+  return form;
+}
+
 async function createGitHubOperationsSkillVersion(
   client: RegistryAnthropicClient,
   skillId: string,
   files: NonNullable<SkillCreateParams["files"]>,
 ): Promise<string> {
-  const createdVersion = await client.beta.skills.versions.create(skillId, {
-    files,
-  });
+  const createdVersion = await client.post<VersionCreateResponse>(
+    `/v1/skills/${encodeURIComponent(skillId)}/versions?beta=true`,
+    {
+      body: buildSkillUploadForm(files),
+      headers: { "anthropic-beta": SKILLS_BETA_HEADER_VALUE },
+    },
+  );
 
   if (typeof createdVersion.version !== "string" || createdVersion.version.length === 0) {
     throw new Error("GitHub operations skill version was created without a version");
