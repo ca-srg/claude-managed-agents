@@ -9,7 +9,7 @@ import type {
 import { createRunQueueModule } from "@/features/run-queue/handler";
 import {
   createStaleRunReaper,
-  interruptAndDeleteSession,
+  interruptSession,
   parseStaleRunReaperConfigFromEnv,
 } from "@/features/stale-run-reaper/reaper";
 import { createDbModule } from "@/shared/persistence/db";
@@ -19,13 +19,13 @@ import type { RunState, RunStatus } from "@/shared/types";
 type DbModule = ReturnType<typeof createDbModule>;
 
 type FakeClientCalls = {
-  deletes: string[];
+  archives: Array<{ sessionId: string }>;
   listCalls: Array<{ params?: EventListParams; sessionId: string }>;
   sends: Array<{ params: EventSendParams; sessionId: string }>;
 };
 
 type FakeClientOptions = {
-  onDelete?: (sessionId: string, calls: FakeClientCalls) => PromiseLike<unknown> | unknown;
+  onArchive?: (sessionId: string, calls: FakeClientCalls) => PromiseLike<unknown> | unknown;
   onList?: (
     sessionId: string,
     params: EventListParams | undefined,
@@ -160,20 +160,20 @@ function createFakeClient(
   calls: FakeClientCalls;
   client: Parameters<typeof createStaleRunReaper>[0]["anthropicClient"];
 } {
-  const calls: FakeClientCalls = { deletes: [], listCalls: [], sends: [] };
+  const calls: FakeClientCalls = { archives: [], listCalls: [], sends: [] };
 
   return {
     calls,
     client: {
       beta: {
         sessions: {
-          async delete(sessionId: string) {
-            calls.deletes.push(sessionId);
-            const deleteOutcome = options.onDelete?.(sessionId, calls);
-            if (deleteOutcome !== undefined) {
-              return await deleteOutcome;
+          async archive(sessionId: string) {
+            calls.archives.push({ sessionId });
+            const archiveOutcome = options.onArchive?.(sessionId, calls);
+            if (archiveOutcome !== undefined) {
+              return await archiveOutcome;
             }
-            return { id: sessionId, type: "session_deleted" };
+            return { ok: true };
           },
           events: {
             list(sessionId: string, params?: EventListParams) {
@@ -266,33 +266,32 @@ describe("createStaleRunReaper", () => {
 
     expect(calls.sends).toHaveLength(1);
     expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
     expect(
       calls.sends.some((send) =>
         send.params.events.some((event) => event.type === "user.custom_tool_result"),
       ),
     ).toBe(false);
-    expect(calls.deletes).toEqual([SESSION_ID]);
-
     const runEvents = db.listRunEvents({ limit: 20, runId: RUN_ID });
     expect(runEvents.map((event) => event.kind)).toContain("error");
     expect(runEvents.map((event) => event.kind)).toContain("complete");
   });
 
-  test("defers recovery when stale session delete ultimately fails", async () => {
+  test("defers recovery when stale session interrupt fails", async () => {
     const db = createDbModule(":memory:");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
-    const toolUse = createCustomToolUseEvent("evt-tool-delete-fails");
+    const toolUse = createCustomToolUseEvent("evt-tool-interrupt-fails");
     const { calls, client } = createFakeClient(
       {
         [SESSION_ID]: [
-          createRequiresActionIdleEvent("evt-idle-delete-fails", [toolUse.id], OLD_PROCESSED_AT),
+          createRequiresActionIdleEvent("evt-idle-interrupt-fails", [toolUse.id], OLD_PROCESSED_AT),
           toolUse,
         ],
       },
       {
-        onDelete: () => {
-          throw new Error("delete failed");
+        onSend: () => {
+          throw new Error("interrupt failed");
         },
       },
     );
@@ -304,16 +303,15 @@ describe("createStaleRunReaper", () => {
       db,
       now: () => NOW,
       runEvents,
-      sleep: async () => undefined,
     });
 
     const summary = await reaper.reapOnce();
 
     expect(summary).toMatchObject({ recovered: 0, skipped: 1, staleRequiresAction: 1 });
     expect(getDbStatus(db)).toBe("running");
-    expect(calls.deletes).toEqual([SESSION_ID, SESSION_ID, SESSION_ID]);
     expect(calls.sends).toHaveLength(1);
     expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toHaveLength(0);
     expect(
       calls.sends.some((send) =>
         send.params.events.some((event) => event.type === "user.custom_tool_result"),
@@ -325,15 +323,50 @@ describe("createStaleRunReaper", () => {
     expect(terminalEvents).toHaveLength(0);
   });
 
-  test("treats delete not found as a successful stale session delete", async () => {
-    const toolUse = createCustomToolUseEvent("evt-tool-delete-not-found");
+  test("defers recovery when stale session archive confirmation fails", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-archive-fails");
     const { calls, db, reaper } = createHarness(
       [
-        createRequiresActionIdleEvent("evt-idle-delete-not-found", [toolUse.id], OLD_PROCESSED_AT),
+        createRequiresActionIdleEvent("evt-idle-archive-fails", [toolUse.id], OLD_PROCESSED_AT),
         toolUse,
       ],
       {
-        onDelete: () => {
+        onArchive: () => {
+          throw new Error("archive failed");
+        },
+      },
+    );
+
+    const summary = await reaper.reapOnce();
+
+    expect(summary).toMatchObject({ recovered: 0, skipped: 1, staleRequiresAction: 1 });
+    expect(getDbStatus(db)).toBe("running");
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.sends.at(0)?.params.events.at(0)).toEqual({ type: "user.interrupt" });
+    expect(calls.archives).toEqual([
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+      { sessionId: SESSION_ID },
+    ]);
+    const terminalEvents = db
+      .listRunEvents({ limit: 20, runId: RUN_ID })
+      .filter((event) => event.kind === "complete" || event.kind === "error");
+    expect(terminalEvents).toHaveLength(0);
+  });
+
+  test("treats interrupt not found with archive confirmation as stale session recovery", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-interrupt-not-found");
+    const { calls, db, reaper } = createHarness(
+      [
+        createRequiresActionIdleEvent(
+          "evt-idle-interrupt-not-found",
+          [toolUse.id],
+          OLD_PROCESSED_AT,
+        ),
+        toolUse,
+      ],
+      {
+        onSend: () => {
           throw createNotFoundError();
         },
       },
@@ -346,34 +379,54 @@ describe("createStaleRunReaper", () => {
     expect(summary).toMatchObject({ recovered: 1, skipped: 0, staleRequiresAction: 1 });
     expect(getDbStatus(db)).toBe("failed");
     expect(calls.sends).toHaveLength(1);
-    expect(calls.deletes).toEqual([SESSION_ID]);
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
   });
 
-  test("interruptAndDeleteSession returns ok when delete reports not found", async () => {
+  test("treats archive not found as successful stale session recovery", async () => {
+    const toolUse = createCustomToolUseEvent("evt-tool-archive-not-found");
+    const { calls, db, reaper } = createHarness(
+      [
+        createRequiresActionIdleEvent("evt-idle-archive-not-found", [toolUse.id], OLD_PROCESSED_AT),
+        toolUse,
+      ],
+      {
+        onArchive: () => {
+          throw createNotFoundError();
+        },
+      },
+    );
+
+    const summary = await reaper.reapOnce({
+      candidates: [{ runId: RUN_ID, sessionIds: [SESSION_ID] }],
+    });
+
+    expect(summary).toMatchObject({ recovered: 1, skipped: 0, staleRequiresAction: 1 });
+    expect(getDbStatus(db)).toBe("failed");
+    expect(calls.sends).toHaveLength(1);
+    expect(calls.archives).toEqual([{ sessionId: SESSION_ID }]);
+  });
+
+  test("interruptSession returns ok when interrupt reports not found", async () => {
     const { calls, client } = createFakeClient(
       {},
       {
-        onDelete: () => {
-          throw createNotFoundError();
-        },
         onSend: () => {
           throw createNotFoundError();
         },
       },
     );
 
-    const result = await interruptAndDeleteSession({
+    const result = await interruptSession({
       client,
       logger: undefined,
       runId: RUN_ID,
       sessionId: SESSION_ID,
       signal: new AbortController().signal,
-      sleep: async () => undefined,
     });
 
     expect(result).toEqual({ ok: true });
     expect(calls.sends).toHaveLength(1);
-    expect(calls.deletes).toEqual([SESSION_ID]);
+    expect(calls.archives).toHaveLength(0);
   });
 
   test("leaves fresh requires_action runs alone", async () => {
@@ -389,7 +442,6 @@ describe("createStaleRunReaper", () => {
     expect(summary.recovered).toBe(0);
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
   });
 
   test("does not reap a requires_action idle whose tool result already exists", async () => {
@@ -405,7 +457,6 @@ describe("createStaleRunReaper", () => {
     expect(summary.staleRequiresAction).toBe(0);
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
   });
 
   test("requires latest session status to be requires_action idle", async () => {
@@ -436,7 +487,6 @@ describe("createStaleRunReaper", () => {
     expect(summary.staleRequiresAction).toBe(0);
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
   });
 
   test("delegates active stale runs to cancelRun before terminalizing", async () => {
@@ -473,7 +523,6 @@ describe("createStaleRunReaper", () => {
     expect(cancelledRunIds).toEqual([RUN_ID]);
     expect(getDbStatus(db)).toBe("aborted");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
   });
 
   test("defers manual recovery when active cancellation times out", async () => {
@@ -503,7 +552,6 @@ describe("createStaleRunReaper", () => {
     expect(summary).toMatchObject({ recovered: 0, skipped: 1, staleRequiresAction: 1 });
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
   });
 
   test("recovers snapshot startup candidates while queue resync excludes them", async () => {
@@ -556,7 +604,6 @@ describe("createStaleRunReaper", () => {
     expect(cancelResults).toEqual(["false:false"]);
     expect(getDbStatus(db, RUN_ID)).toBe("failed");
     expect(calls.sends).toHaveLength(1);
-    expect(calls.deletes).toEqual([SESSION_ID]);
 
     queue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 
@@ -579,7 +626,6 @@ describe("createStaleRunReaper", () => {
     });
     expect(getDbStatus(db)).toBe("aborted");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
     expectAbortedRunEvents(db);
   });
 
@@ -604,7 +650,6 @@ describe("createStaleRunReaper", () => {
     expect(getDbStatus(db)).toBe("aborted");
     expect(calls.listCalls).toHaveLength(1);
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
     expectAbortedRunEvents(db);
   });
 
@@ -624,7 +669,6 @@ describe("createStaleRunReaper", () => {
     });
     expect(getDbStatus(db)).toBe("running");
     expect(calls.sends).toHaveLength(0);
-    expect(calls.deletes).toHaveLength(0);
     expect(db.listRunEvents({ limit: 20, runId: RUN_ID })).toHaveLength(0);
   });
 

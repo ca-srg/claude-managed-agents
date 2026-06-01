@@ -72,6 +72,7 @@ import {
   type RepositoryChatAnthropicClient,
   type RepositoryChatContextFlags,
   type RepositoryChatDeps,
+  RepositoryChatSessionError,
   runRepositoryChatTurn,
 } from "@/features/repo-chat/handler";
 import { RunStartInputSchema } from "@/features/run-api/schemas";
@@ -107,7 +108,6 @@ import type { RunStatus } from "@/shared/types";
 import {
   ensureMcpCredentials as defaultEnsureMcpCredentials,
   ensureVault as defaultEnsureVault,
-  releaseVault as defaultReleaseVault,
 } from "@/shared/vault";
 
 type DbModule = ReturnType<typeof import("@/shared/persistence/db").createDbModule>;
@@ -260,7 +260,6 @@ export type CreateAppOptions = {
       | "ensureEnvironmentForRepo"
       | "ensureMcpCredentials"
       | "ensureVault"
-      | "releaseVault"
       | "runSession"
       | "timeoutMs"
     >
@@ -505,7 +504,6 @@ function repoChatDepsFromOptions(opts: CreateAppOptions): RepositoryChatDeps | n
     ensureVault: opts.repoChat?.ensureVault ?? defaultEnsureVault,
     githubAuth: opts.githubAuth,
     logger: opts.logger ?? createLogger({ level: "silent" }),
-    releaseVault: opts.repoChat?.releaseVault ?? defaultReleaseVault,
     runSession: opts.repoChat?.runSession ?? defaultRunSession,
     ...(typeof opts.repoChat?.timeoutMs === "number" ? { timeoutMs: opts.repoChat.timeoutMs } : {}),
   };
@@ -686,6 +684,10 @@ function repoChatUnavailableMessage(): string {
 
 function repoChatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Managed Agents chat failed";
+}
+
+function repoChatErrorSessionId(error: unknown): string | undefined {
+  return error instanceof RepositoryChatSessionError ? error.sessionId : undefined;
 }
 
 function repoChatResponse(
@@ -1509,15 +1511,17 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
         threadId: thread.id,
       });
     } catch (error) {
+      const errorMessage = repoChatErrorMessage(error);
       logger?.warn({ err: error, repo, threadId: thread.id }, "repository chat turn failed");
       db.insertRepoChatMessage({
-        content: repoChatErrorMessage(error),
+        content: errorMessage,
         id: uuidv7(),
         role: "assistant",
+        sessionId: repoChatErrorSessionId(error),
         threadId: thread.id,
       });
       return c.redirect(
-        `/repos/${owner}/${name}/chat?thread=${encodeURIComponent(thread.id)}&error=${encodeURIComponent(repoChatErrorMessage(error))}`,
+        `/repos/${owner}/${name}/chat?thread=${encodeURIComponent(thread.id)}&error=${encodeURIComponent(errorMessage)}`,
         302,
       );
     }

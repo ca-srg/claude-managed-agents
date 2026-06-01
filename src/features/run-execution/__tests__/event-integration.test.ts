@@ -220,7 +220,6 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
       subIssues: [],
     })) as RunExecutionDeps["readIssue"],
     releaseRunLock: async () => {},
-    releaseVault: (async () => {}) as RunExecutionDeps["releaseVault"],
     runPreflight: (async () => ({
       anthropic: {
         checked: true,
@@ -312,7 +311,6 @@ describe("runIssueOrchestration run-events integration", () => {
       "decomposition",
       "child_execution",
       "finalize_pr",
-      "cleanup",
     ]);
     // session.created/prompt_sent/completed は SSE 側の動的監視で必須なので emit される
     expect(runEvents.calls.some((call) => call.event.kind === "complete")).toBe(false);

@@ -56,7 +56,6 @@ import { acquireRunLock, readAgentState, releaseRunLock, writeRunState } from "@
 import {
   ensureMcpCredentials,
   ensureVault,
-  releaseVault,
   updateMcpCredentialToken,
 } from "@/shared/vault";
 
@@ -280,7 +279,6 @@ const executor = async (
     anthropicClient: anthropicClient as RunExecutionDeps["anthropicClient"],
     buildChildPrompt,
     buildParentPrompt,
-    cleanup: undefined,
     db,
     ensureAgents: agentRegistry.ensureAgents,
     ensureEnvironment,
@@ -298,7 +296,6 @@ const executor = async (
     parentCustomTools: PARENT_CUSTOM_TOOLS,
     readIssue,
     releaseRunLock,
-    releaseVault,
     runEvents,
     runPreflight,
     runSession,
@@ -343,7 +340,7 @@ cleanup.register(async () => {
 
 // Snapshot running rows with persisted Managed Agents sessions before queue
 // orphan resync. These runs are excluded from queue aborts so the reaper can
-// attempt remote delete-first recovery after the HTTP server is already live.
+// attempt remote stop/archive confirmation after the HTTP server is already live.
 const startupCandidates = staleRunReaper.snapshotRunningCandidates();
 runQueue.start({ resyncExcludeRunIds: startupCandidates.map((candidate) => candidate.runId) });
 

@@ -100,6 +100,7 @@ function createFakeSessionClient(opts: {
 
 function createFakeRepositoryChatClient(opts: {
   assistantText: string;
+  sendError?: Error;
   sessionId?: string;
 }): RepositoryChatAnthropicClient {
   const sessionId = opts.sessionId ?? "sesn-repo-chat-1";
@@ -126,9 +127,6 @@ function createFakeRepositoryChatClient(opts: {
         async create() {
           return { id: sessionId };
         },
-        async delete() {
-          return { ok: true };
-        },
         events: {
           list() {
             return asyncIterableOf([
@@ -136,6 +134,10 @@ function createFakeRepositoryChatClient(opts: {
             ]);
           },
           async send() {
+            if (opts.sendError !== undefined) {
+              throw opts.sendError;
+            }
+
             return { ok: true };
           },
           async stream() {
@@ -462,7 +464,6 @@ describe("createApp", () => {
         }),
         ensureMcpCredentials: async () => [],
         ensureVault: async () => ({ managedByUs: false, vaultId: "vault-repo-chat" }),
-        releaseVault: async () => {},
         runSession: async () => {
           runSessionCalls += 1;
           return createSessionResult({ sessionId: chatSessionId });
@@ -491,6 +492,61 @@ describe("createApp", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[0]?.content).toBe("Please inspect the dashboard context.");
     expect(messages[1]?.content).toBe("Fake Managed Agents answer");
+    expect(messages[1]?.sessionId).toBe(chatSessionId);
+  });
+
+  test("POST /repos/:owner/:name/chat keeps failed Managed Agents session reachable", async () => {
+    const chatSessionId = "sesn-repo-chat-failed";
+    let runSessionCalls = 0;
+    const { app, db } = createAppWithSeededDb(undefined, {
+      githubAuth: createFakeGitHubAuth(),
+      repoChat: {
+        anthropicClient: createFakeRepositoryChatClient({
+          assistantText: "unused",
+          sendError: new Error("failed to send repo chat prompt"),
+          sessionId: chatSessionId,
+        }),
+        ensureEnvironment: async () => ({
+          created: true,
+          environmentId: "env-repo-chat",
+          hash: "repo-chat-env-hash",
+        }),
+        ensureEnvironmentForRepo: async () => ({
+          created: true,
+          environmentId: "env-repo-chat",
+          hash: "repo-chat-env-hash",
+          updated: false,
+        }),
+        ensureMcpCredentials: async () => [],
+        ensureVault: async () => ({ managedByUs: false, vaultId: "vault-repo-chat" }),
+        runSession: async () => {
+          runSessionCalls += 1;
+          return createSessionResult({ sessionId: chatSessionId });
+        },
+      },
+    });
+
+    const response = await app.request("/repos/acme/widgets/chat", {
+      method: "POST",
+      body: createRepoChatForm("Please inspect the dashboard context."),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      redirect: "manual",
+    });
+
+    const threads = db.listRepoChatThreads("acme/widgets");
+    expect(response.status).toBe(302);
+    expect(threads).toHaveLength(1);
+    expect(response.headers.get("Location")).toBe(
+      `/repos/acme/widgets/chat?thread=${threads[0]?.id}&error=failed%20to%20send%20repo%20chat%20prompt`,
+    );
+    expect(runSessionCalls).toBe(0);
+
+    const messages = db.listRepoChatMessages(threads[0]?.id ?? "missing");
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(messages[0]?.content).toBe("Please inspect the dashboard context.");
+    expect(messages[1]?.content).toBe("failed to send repo chat prompt");
     expect(messages[1]?.sessionId).toBe(chatSessionId);
   });
 
