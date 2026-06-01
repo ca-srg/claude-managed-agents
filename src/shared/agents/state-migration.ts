@@ -1,9 +1,10 @@
 import type { createDbModule } from "@/shared/persistence/db";
 import type { AgentState } from "@/shared/types";
+import { buildEnvironmentDefinition, hashEnvironmentDefinition } from "./environment";
 
 type AgentRegistryMigrationDb = Pick<
   ReturnType<typeof createDbModule>,
-  "getAgentRegistryState" | "setAgentRegistryState"
+  "getAgentRegistryState" | "setAgentRegistryState" | "setDefaultEnvironmentState"
 >;
 
 type LegacyPersistedAgentState = AgentState & {
@@ -38,6 +39,10 @@ export async function migrateLegacyAgentStateToDb(options: {
     parentDefinitionHash: optionalString(legacyState.parentDefinitionHash),
     childDefinitionHash: optionalString(legacyState.childDefinitionHash),
     createdAt: legacyState.createdAt,
+  });
+  options.db.setDefaultEnvironmentState({
+    definitionHash: hashEnvironmentDefinition(buildEnvironmentDefinition()),
+    environmentId: legacyState.environmentId,
   });
 
   return { migrated: true };
