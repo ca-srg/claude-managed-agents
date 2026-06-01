@@ -224,11 +224,12 @@ export function buildPRBody(
   parentIssueNumber: number | null,
   subIssuesSummary: readonly SubIssueSummary[],
   originSection = "",
+  sessionSection = "",
 ): string {
   const closingLine = parentIssueNumber === null ? "" : `Closes #${parentIssueNumber}`;
   const normalizedUserBody = removeExistingClosingReferences(userBody, parentIssueNumber);
   const subIssuesSection = buildSubIssuesSection(subIssuesSummary);
-  const tailSections = [subIssuesSection, originSection, closingLine];
+  const tailSections = [subIssuesSection, originSection, closingLine, sessionSection];
   const completeBody = joinBodySections([normalizedUserBody, ...tailSections]);
 
   if (byteLength(completeBody) <= BODY_SIZE_CAP_BYTES) {
@@ -254,7 +255,12 @@ export function buildPRBody(
     return truncatedBody;
   }
 
-  const minimalTail = joinBodySections([TRUNCATION_MARKER, originSection, closingLine]);
+  const minimalTail = joinBodySections([
+    TRUNCATION_MARKER,
+    originSection,
+    closingLine,
+    sessionSection,
+  ]);
   const availableSummaryBytes = BODY_SIZE_CAP_BYTES - byteLength(minimalTail);
 
   if (availableSummaryBytes <= 0 || preservedTail.length === 0) {
@@ -267,6 +273,7 @@ export function buildPRBody(
     truncatedSummary,
     originSection,
     closingLine,
+    sessionSection,
   ]);
 
   while (byteLength(truncatedBody) > BODY_SIZE_CAP_BYTES && truncatedSummary.length > 0) {
@@ -276,6 +283,7 @@ export function buildPRBody(
       truncatedSummary,
       originSection,
       closingLine,
+      sessionSection,
     ]);
   }
 

@@ -46,6 +46,9 @@ export const createFinalPrDeps = {
   resolveDefaultBranch,
 };
 
+const CLAUDE_MANAGED_AGENTS_SESSION_URL_PREFIX =
+  "https://platform.claude.com/workspaces/default/sessions/";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -103,6 +106,27 @@ function buildOriginSection(ctx: CreateFinalPrContext): string {
   const originLine = url ? `- [${display}](${url})` : `- ${display}`;
 
   return ["## Origin", originLine].join("\n");
+}
+
+function firstSessionId(runState: RunState): string | null {
+  for (const sessionId of runState.sessionIds) {
+    const trimmedSessionId = sessionId.trim();
+    if (trimmedSessionId.length > 0) {
+      return trimmedSessionId;
+    }
+  }
+
+  return null;
+}
+
+function buildClaudeManagedAgentsSessionSection(runState: RunState): string {
+  const sessionId = firstSessionId(runState);
+  if (sessionId === null) {
+    return "";
+  }
+
+  const sessionUrl = `${CLAUDE_MANAGED_AGENTS_SESSION_URL_PREFIX}${encodeURIComponent(sessionId)}`;
+  return ["## Claude Managed Agents session", sessionUrl].join("\n");
 }
 
 function normalizeConfiguredBase(baseBranch?: string): string | undefined {
@@ -190,6 +214,7 @@ export async function handleCreateFinalPr(
     parentIssueNumber,
     subIssuesSummary,
     buildOriginSection(ctx),
+    buildClaudeManagedAgentsSessionSection(ctx.runState),
   );
 
   try {

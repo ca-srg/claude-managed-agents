@@ -89,6 +89,10 @@ function createPullRequestPayload(overrides: Partial<Record<string, unknown>> = 
 }
 
 describe("buildPRBody", () => {
+  const claudeSessionUrl =
+    "https://platform.claude.com/workspaces/default/sessions/sesn_01MfJnHA6dgV7MQjfQSZx5VY";
+  const claudeSessionSection = ["## Claude Managed Agents session", claudeSessionUrl].join("\n");
+
   test("auto-appends Closes #N if missing from the user body", () => {
     const body = buildPRBody("Summary", 42, [{ title: "Task 1", url: "http://x/1" }]);
 
@@ -137,14 +141,28 @@ describe("buildPRBody", () => {
     expect(body).not.toContain("Closes #");
   });
 
+  test("appends the Claude Managed Agents session URL at the bottom", () => {
+    const body = buildPRBody("Summary", 42, [], "", claudeSessionSection);
+
+    expect(body).toBe(`Summary\n\nCloses #42\n\n${claudeSessionSection}\n`);
+    expect(body.endsWith(`${claudeSessionUrl}\n`)).toBe(true);
+  });
+
   test("truncates PR bodies over 60KB with ...[truncated; see sub-issues for details] marker", () => {
     const longSummary = "A".repeat(70 * 1024);
 
-    const body = buildPRBody(longSummary, 42, [{ title: "Task 1", url: "http://x/1" }]);
+    const body = buildPRBody(
+      longSummary,
+      42,
+      [{ title: "Task 1", url: "http://x/1" }],
+      "",
+      claudeSessionSection,
+    );
 
     expect(Buffer.byteLength(body, "utf8") <= 60 * 1024).toBe(true);
     expect(body).toContain("...[truncated; see sub-issues for details]");
     expect(countClosingLines(body, 42)).toBe(1);
+    expect(body.endsWith(`${claudeSessionUrl}\n`)).toBe(true);
   });
 });
 

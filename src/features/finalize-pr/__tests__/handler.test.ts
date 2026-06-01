@@ -73,6 +73,7 @@ function defaultBuildPRBody(
   parentIssueNumber: number | null,
   subIssuesSummary: readonly SubIssueSummary[],
   originSection = "",
+  sessionSection = "",
 ): string {
   const normalizedUserBody =
     parentIssueNumber === null
@@ -98,6 +99,10 @@ function defaultBuildPRBody(
 
   if (parentIssueNumber !== null) {
     sections.push(`Closes #${parentIssueNumber}`);
+  }
+
+  if (sessionSection.trim().length > 0) {
+    sections.push(sessionSection);
   }
 
   return `${sections.filter((section) => section.trim().length > 0).join("\n\n")}\n`;
@@ -190,7 +195,7 @@ function buildRunState(overrides: Partial<RunState> = {}): RunState {
     issueNumber: 42,
     repo: "acme/widgets",
     runId: "run-123",
-    sessionIds: ["session-1"],
+    sessionIds: ["sesn_01MfJnHA6dgV7MQjfQSZx5VY"],
     startedAt: "2026-04-23T00:00:00.000Z",
     subIssues: [
       { issueId: 501, issueNumber: 101, taskId: "task-1" },
@@ -386,6 +391,28 @@ describe("handleCreateFinalPr", () => {
     expect(requestBody).toContain("## Sub-issues");
     expect(requestBody).toContain("[Sub-issue #101](https://github.com/acme/widgets/issues/101)");
     expect(requestBody).toContain("[Sub-issue #102](https://github.com/acme/widgets/issues/102)");
+  });
+
+  test("appends the Claude Managed Agents session URL at the bottom", async () => {
+    createOrUpdatePRImpl = async (_octokit, _options): Promise<CreateOrUpdatePRResult> => ({
+      prNumber: 83,
+      prUrl: "https://github.com/acme/widgets/pull/83",
+      updated: false,
+    });
+
+    await handleCreateFinalPr(buildContext(), buildValidArgs());
+
+    const requestBody = createOrUpdatePRCalls[0]?.body;
+    if (typeof requestBody !== "string") {
+      throw new Error("Expected createOrUpdatePR to receive a string body");
+    }
+
+    const expectedUrl =
+      "https://platform.claude.com/workspaces/default/sessions/sesn_01MfJnHA6dgV7MQjfQSZx5VY";
+    const expectedSection = ["## Claude Managed Agents session", expectedUrl].join("\n");
+
+    expect(buildPRBodyCalls[0]?.[4]).toBe(expectedSection);
+    expect(requestBody.endsWith(`${expectedUrl}\n`)).toBe(true);
   });
 
   test("existing PR updates title/body without creating a duplicate", async () => {
