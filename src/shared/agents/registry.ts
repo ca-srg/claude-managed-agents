@@ -5,12 +5,35 @@ import type {
   AgentCreateParams,
   AgentUpdateParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
+import type {
+  SkillCreateParams,
+  SkillCreateResponse,
+  SkillListParams,
+  SkillListResponse,
+} from "@anthropic-ai/sdk/resources/beta/skills/skills";
+import type {
+  VersionCreateParams,
+  VersionCreateResponse,
+} from "@anthropic-ai/sdk/resources/beta/skills/versions";
 import type { Config } from "@/shared/config";
 import { RUN_LOCK } from "@/shared/constants";
 import type { McpServer } from "@/shared/persistence/db";
 import { createStateModule } from "@/shared/state";
-import type { AgentRegistryState, PersistedAgentRegistryState } from "@/shared/types";
+import type {
+  AgentRegistryState,
+  PersistedAgentRegistryState,
+  PersistedSystemSkillState,
+  SystemSkillKey,
+  SystemSkillState,
+} from "@/shared/types";
 import { buildChildDefinition } from "./child";
+import {
+  buildGitHubOperationsSkillFiles,
+  GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
+  GITHUB_OPERATIONS_SKILL_KEY,
+  hashGitHubOperationsSkill,
+  toGitHubOperationsSkillParams,
+} from "./github-operations-skill";
 import { hashDefinition } from "./hash";
 import {
   buildParentDefinition,
@@ -26,14 +49,26 @@ const LOCK_RETRY_OPTIONS = {
   randomize: false,
 } as const;
 
+const SKILLS_BETA_HEADER_VALUE = "skills-2025-10-02";
+
 type AgentRole = "parent" | "child";
+
+type MultipartPostOptions = {
+  body: FormData;
+  headers: Record<string, string>;
+};
 
 export type AgentRegistryStateStore = {
   readAgentRegistryState(): AgentRegistryState | null | Promise<AgentRegistryState | null>;
   writeAgentRegistryState(state: PersistedAgentRegistryState): void | Promise<void>;
+  readSystemSkillState(
+    key: SystemSkillKey,
+  ): SystemSkillState | null | Promise<SystemSkillState | null>;
+  writeSystemSkillState(state: PersistedSystemSkillState): void | Promise<void>;
 };
 
 export type RegistryAnthropicClient = {
+  post<Response>(path: string, options: MultipartPostOptions): PromiseLike<Response>;
   beta: {
     agents: {
       create(params: AgentCreateParams): PromiseLike<{ id: string; version: number }>;
@@ -41,6 +76,13 @@ export type RegistryAnthropicClient = {
         agentId: string,
         params: AgentUpdateParams,
       ): PromiseLike<{ id: string; version: number }>;
+    };
+    skills: {
+      create(params: SkillCreateParams): PromiseLike<SkillCreateResponse>;
+      list(params?: SkillListParams | null | undefined): AsyncIterable<SkillListResponse>;
+      versions: {
+        create(skillId: string, params: VersionCreateParams): PromiseLike<VersionCreateResponse>;
+      };
     };
   };
 };
@@ -92,10 +134,14 @@ type CreateRegistryDeps = Pick<RegistryDeps, "agentStateStore"> &
 export function createDatabaseAgentRegistryStateStore(db: {
   getAgentRegistryState(): AgentRegistryState | null;
   setAgentRegistryState(state: AgentRegistryState): void;
+  getSystemSkillState(key: SystemSkillKey): SystemSkillState | null;
+  setSystemSkillState(state: PersistedSystemSkillState): void;
 }): AgentRegistryStateStore {
   return {
     readAgentRegistryState: () => db.getAgentRegistryState(),
+    readSystemSkillState: (key) => db.getSystemSkillState(key),
     writeAgentRegistryState: (state) => db.setAgentRegistryState(state),
+    writeSystemSkillState: (state) => db.setSystemSkillState(state),
   };
 }
 
@@ -182,6 +228,155 @@ function buildCoordinatorRoster(
   };
 }
 
+type ExistingGitHubOperationsSkill = Pick<
+  SkillListResponse,
+  "display_title" | "id" | "latest_version"
+>;
+
+function readErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") {
+      return message;
+    }
+  }
+
+  return String(error);
+}
+
+function isDuplicateDisplayTitleError(error: unknown): boolean {
+  const message = readErrorMessage(error).toLowerCase();
+
+  return (
+    message.includes("display_title") &&
+    (message.includes("reuse") || message.includes("duplicate") || message.includes("already"))
+  );
+}
+
+async function findGitHubOperationsSystemSkill(
+  client: RegistryAnthropicClient,
+): Promise<ExistingGitHubOperationsSkill | null> {
+  for await (const skill of client.beta.skills.list({ source: "custom", limit: 100 })) {
+    if (skill.display_title === GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE) {
+      return skill;
+    }
+  }
+
+  return null;
+}
+
+function buildSkillUploadForm(files: NonNullable<SkillCreateParams["files"]>): FormData {
+  const form = new FormData();
+
+  for (const file of files) {
+    if (!(file instanceof Blob)) {
+      throw new TypeError("GitHub operations skill uploads must be File or Blob instances");
+    }
+
+    const uploadName = (file as { name?: unknown }).name;
+    const fileName =
+      typeof uploadName === "string" && uploadName.length > 0 ? uploadName : undefined;
+    form.append("files[]", file, fileName);
+  }
+
+  return form;
+}
+
+async function createGitHubOperationsSkillVersion(
+  client: RegistryAnthropicClient,
+  skillId: string,
+  files: NonNullable<SkillCreateParams["files"]>,
+): Promise<string> {
+  const createdVersion = await client.post<VersionCreateResponse>(
+    `/v1/skills/${encodeURIComponent(skillId)}/versions?beta=true`,
+    {
+      body: buildSkillUploadForm(files),
+      headers: { "anthropic-beta": SKILLS_BETA_HEADER_VALUE },
+    },
+  );
+
+  if (typeof createdVersion.version !== "string" || createdVersion.version.length === 0) {
+    throw new Error("GitHub operations skill version was created without a version");
+  }
+
+  return createdVersion.version;
+}
+
+function readCreatedSkillVersion(createdSkill: SkillCreateResponse): string {
+  if (typeof createdSkill.latest_version !== "string" || createdSkill.latest_version.length === 0) {
+    throw new Error("GitHub operations skill was created without a latest version");
+  }
+
+  return createdSkill.latest_version;
+}
+
+async function ensureGitHubOperationsSystemSkill(
+  client: RegistryAnthropicClient,
+  store: AgentRegistryStateStore,
+): Promise<{ skillId: string; skillVersion: string }> {
+  const contentHash = hashGitHubOperationsSkill();
+  const existingState = await store.readSystemSkillState(GITHUB_OPERATIONS_SKILL_KEY);
+
+  if (existingState !== null && existingState.contentHash === contentHash) {
+    return {
+      skillId: existingState.skillId,
+      skillVersion: existingState.skillVersion,
+    };
+  }
+
+  const files = await buildGitHubOperationsSkillFiles();
+  const createdAt = existingState?.createdAt ?? new Date().toISOString();
+  let skillId: string;
+  let skillVersion: string;
+
+  if (existingState === null) {
+    const existingSkill = await findGitHubOperationsSystemSkill(client);
+
+    if (existingSkill !== null) {
+      skillId = existingSkill.id;
+      skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
+    } else {
+      try {
+        const createdSkill = await client.beta.skills.create({
+          display_title: GITHUB_OPERATIONS_SKILL_DISPLAY_TITLE,
+          files,
+        });
+        skillId = createdSkill.id;
+        skillVersion = readCreatedSkillVersion(createdSkill);
+      } catch (error) {
+        if (!isDuplicateDisplayTitleError(error)) {
+          throw error;
+        }
+
+        const racedSkill = await findGitHubOperationsSystemSkill(client);
+        if (racedSkill === null) {
+          throw error;
+        }
+
+        skillId = racedSkill.id;
+        skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
+      }
+    }
+  } else {
+    skillId = existingState.skillId;
+    skillVersion = await createGitHubOperationsSkillVersion(client, skillId, files);
+  }
+
+  await store.writeSystemSkillState({
+    contentHash,
+    createdAt,
+    key: GITHUB_OPERATIONS_SKILL_KEY,
+    skillId,
+    skillVersion,
+  });
+
+  return { skillId, skillVersion };
+}
+
 export function createRegistry(deps: CreateRegistryDeps) {
   const stateModule = deps.stateModule ?? createStateModule();
   const registryDeps: RegistryDeps = {
@@ -206,12 +401,6 @@ export function createRegistry(deps: CreateRegistryDeps) {
     client: RegistryAnthropicClient,
     options: EnsureAgentsOptions,
   ): Promise<EnsureAgentsResult> {
-    const childDefinition = registryDeps.buildChild(
-      options.cfg,
-      { child: options.childPrompt },
-      options.mcpServers,
-    );
-    const childDefinitionHash = registryDeps.hash(childDefinition);
     const lockFilePath = resolve(process.cwd(), `${RUN_LOCK}.lock`);
     let lockAcquired = false;
 
@@ -224,6 +413,18 @@ export function createRegistry(deps: CreateRegistryDeps) {
       }
 
       const existingState = await registryDeps.agentStateStore.readAgentRegistryState();
+      const githubOperationsSkill = await ensureGitHubOperationsSystemSkill(
+        client,
+        registryDeps.agentStateStore,
+      );
+      const systemSkills = [toGitHubOperationsSkillParams(githubOperationsSkill)];
+      const childDefinition = registryDeps.buildChild(
+        options.cfg,
+        { child: options.childPrompt },
+        options.mcpServers,
+        systemSkills,
+      );
+      const childDefinitionHash = registryDeps.hash(childDefinition);
 
       if (options.forceRecreate === true || existingState === null) {
         const createdChild = await client.beta.agents.create(childDefinition);
@@ -232,6 +433,7 @@ export function createRegistry(deps: CreateRegistryDeps) {
           { parent: options.parentPrompt },
           options.parentCustomTools,
           options.mcpServers,
+          systemSkills,
           buildCoordinatorRoster(createdChild.id, createdChild.version),
         );
         const parentDefinitionHash = registryDeps.hash(parentDefinition);
@@ -279,6 +481,7 @@ export function createRegistry(deps: CreateRegistryDeps) {
         { parent: options.parentPrompt },
         options.parentCustomTools,
         options.mcpServers,
+        systemSkills,
         buildCoordinatorRoster(updatedChild.id, updatedChild.version),
       );
       const parentDefinitionHash = registryDeps.hash(parentDefinition);

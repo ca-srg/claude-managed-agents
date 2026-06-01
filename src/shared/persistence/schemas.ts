@@ -408,6 +408,9 @@ export type McpServerUpdateInput = z.infer<typeof McpServerUpdateInputSchema>;
 
 // --- Global agent registry / default environment state ---
 
+export const SystemSkillKeySchema = z.enum(["github_operations"]);
+export type SystemSkillKey = z.infer<typeof SystemSkillKeySchema>;
+
 export const AgentRegistryStateSchema = z.object({
   parentAgentId: NonEmptyStringSchema,
   parentAgentVersion: PositiveIntegerSchema,
@@ -416,6 +419,15 @@ export const AgentRegistryStateSchema = z.object({
   definitionHash: NonEmptyStringSchema,
   parentDefinitionHash: NonEmptyStringSchema.nullable(),
   childDefinitionHash: NonEmptyStringSchema.nullable(),
+  createdAt: NonEmptyStringSchema,
+  updatedAt: NonEmptyStringSchema,
+});
+
+export const SystemSkillStateSchema = z.object({
+  key: SystemSkillKeySchema,
+  skillId: NonEmptyStringSchema,
+  skillVersion: NonEmptyStringSchema,
+  contentHash: NonEmptyStringSchema,
   createdAt: NonEmptyStringSchema,
   updatedAt: NonEmptyStringSchema,
 });

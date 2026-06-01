@@ -29,6 +29,8 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain(
       "MUST NOT call any `spawn_child_task` custom tool — it has been removed",
     );
+    expect(prompt).toContain("GitHub App GitHub Operations skill");
+    expect(prompt).toContain("GitHub MCP/API issue-read tool");
     expect(prompt).toContain(
       "git fetch && git checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git checkout -B agent/issue-123/fix-bug origin/main",
     );
@@ -38,6 +40,7 @@ describe("buildParentPrompt", () => {
       "Git identity = claude-agent[bot]/claude-agent@users.noreply.github.com",
     );
     expect(prompt).toContain("MUST run `bun test` before commit if the project has it");
+    expect(prompt).toContain("use the GitHub MCP/API file commit path on the same branch");
     expect(prompt).toContain(
       "call the `create_final_pr` custom tool with a consolidated title and body",
     );

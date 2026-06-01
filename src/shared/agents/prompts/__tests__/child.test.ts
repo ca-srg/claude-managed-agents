@@ -53,6 +53,16 @@ describe("buildChildPrompt", () => {
     expect(prompt).toContain("For every task you receive from the parent thread");
   });
 
+  it("should include GitHub App operations skill fallback guidance", () => {
+    const prompt = buildChildPrompt(defaultArgs);
+
+    expect(prompt).toContain("GitHub App GitHub Operations skill");
+    expect(prompt).toContain(
+      "Do not repair local signing, SSH, or credential-helper infrastructure",
+    );
+    expect(prompt).toContain("use the GitHub MCP/API file commit path");
+  });
+
   it("should include return JSON format", () => {
     const prompt = buildChildPrompt(defaultArgs);
     expect(prompt).toContain("Reply to the parent thread with a JSON code block");

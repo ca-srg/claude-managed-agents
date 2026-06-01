@@ -41,6 +41,8 @@ Repository: ${repoOwner}/${repoName}
 Working branch: ${branch}
 Base branch: ${baseBranch}
 
+GitHub operations: follow the attached GitHub App GitHub Operations skill for authentication, commits, pushes, and API/MCP fallback behavior. Do not repair local signing, SSH, or credential-helper infrastructure.
+
 For every task you receive from the parent thread, follow this exact procedure:
 
 1. Configure git and check out the working branch:
@@ -56,10 +58,11 @@ For every task you receive from the parent thread, follow this exact procedure:
 
 3. Run \`bun test\` before committing if \`package.json\` has a test script. If no test script exists, explicitly state that in your reply.
 
-4. Commit using the ${commitStyle} format (\`{type}({scope}): {subject}\`). Push the branch:
+4. Commit using the ${commitStyle} format (\`{type}({scope}): {subject}\`). Prefer local commit/push only when it succeeds without changing authentication or signing setup. Push the branch:
    \`\`\`
    git push -u origin ${branch}
    \`\`\`
+   If local commit or push fails because signing, SSH, credential helpers, or loopback MCP helpers are unavailable, stop retrying that path and use the GitHub MCP/API file commit path on \`${branch}\` with the final file snapshot instead.
 
 5. Reply to the parent thread with a JSON code block summarizing the outcome. The orchestrator parses this block to track per-task results, so the schema MUST match exactly:
    \`\`\`json

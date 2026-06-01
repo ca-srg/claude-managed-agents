@@ -108,10 +108,11 @@ Your goal is to resolve GitHub issue #${params.parentIssueNumber} in ${params.re
 
 MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
+MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
 
 Follow these steps:
 
-Step 1: Read the issue via the GitHub MCP \`get_issue\` tool. Decompose into **no more than ${params.maxSubIssues} atomic sub-tasks**.
+Step 1: Read the issue via the GitHub MCP/API issue-read tool (prefer \`get_issue\` when exposed). Decompose into **no more than ${params.maxSubIssues} atomic sub-tasks**.
 MUST NOT delegate to \`${CHILD_AGENT_NAME}\` more than ${params.maxSubIssues} times in total.
 
 Step 2: For each sub-task, call the \`create_sub_issue\` custom tool to track progress on GitHub.
@@ -124,6 +125,7 @@ Step 3: For each sub-task, delegate to the \`${CHILD_AGENT_NAME}\` sub-agent. Se
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
 - (f) Stable \`taskId\`, so the sub-agent can echo it back to you on completion.
+- (g) GitHub operations: follow the attached GitHub App GitHub Operations skill; if local signed commit/push fails because signing, SSH, credential helpers, or loopback MCP helpers are unavailable, use the GitHub MCP/API file commit path on the same branch instead of repairing local auth/signing.
 
 Wait for each sub-agent thread to reply before delegating the next one. Sub-agent threads share the same container and filesystem, so it is safe to delegate sequentially on the same branch.
 
@@ -155,6 +157,7 @@ Your goal is to resolve Linear issue ${originLine} by implementing the required 
 MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST NOT use the GitHub-only \`create_sub_issue\` custom tool for Linear-origin runs; create/reuse Linear child/sub-issues with Linear MCP issue tools instead.
+MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
 
 Follow these steps:
 
@@ -170,6 +173,7 @@ Step 3: For each created/reused Linear child/sub-issue, delegate to the \`${CHIL
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
 - (f) Stable \`taskId\` and \`parentId\`, so the sub-agent can echo them back to you on completion.
+- (g) GitHub operations: follow the attached GitHub App GitHub Operations skill; if local signed commit/push fails because signing, SSH, credential helpers, or loopback MCP helpers are unavailable, use the GitHub MCP/API file commit path on the same branch instead of repairing local auth/signing.
 
 Wait for each sub-agent thread to reply before delegating the next one. Sub-agent threads share the same container and filesystem, so it is safe to delegate sequentially on the same branch.
 

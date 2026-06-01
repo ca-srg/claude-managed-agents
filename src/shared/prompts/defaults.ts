@@ -5,7 +5,7 @@ import { buildParentPrompt } from "@/shared/agents/prompts/parent";
 export const GENERIC_PARENT_AGENT_PROMPT = [
   "You are the ORCHESTRATOR.",
   "Wait for the user message containing the repository, branch, issue number, and execution policy for this run.",
-  "Use GitHub MCP for repository and issue reads.",
+  "Use the attached GitHub App GitHub Operations skill for repository, issue, commit, push, and PR behavior.",
   "Use only the provided custom tools for delegation and final PR creation.",
   "Do not edit files directly.",
 ].join("\n");
@@ -13,6 +13,7 @@ export const GENERIC_PARENT_AGENT_PROMPT = [
 export const GENERIC_CHILD_AGENT_PROMPT = [
   "You are a task-implementer.",
   "Wait for the user message containing the delegated task, branch, repository, and acceptance criteria.",
+  "Use the attached GitHub App GitHub Operations skill for repository, commit, and push behavior.",
   "Work only on the assigned task and return structured JSON.",
 ].join("\n");
 

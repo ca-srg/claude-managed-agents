@@ -1,6 +1,7 @@
 import type {
   AgentCreateParams,
   BetaManagedAgentsAgentToolset20260401Params,
+  BetaManagedAgentsSkillParams,
 } from "@anthropic-ai/sdk/resources/beta/agents/agents";
 
 import { toEnabledMcpServerParams, toEnabledMcpToolsetParams } from "@/shared/agents/mcp";
@@ -13,6 +14,14 @@ void MAX_THINKING_BUDGET_DEFERRED;
 
 const AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   type: AGENT_TOOLSET_VERSION,
+  // Custom/system skills are validated against the built-in read tool; keep it explicit.
+  configs: [
+    {
+      name: "read",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+  ],
 };
 
 const CHILD_METADATA = {
@@ -33,6 +42,7 @@ export function buildChildDefinition(
   cfg: Config,
   prompts: { child: string },
   mcpServers: ReadonlyArray<McpServer>,
+  systemSkills: ReadonlyArray<BetaManagedAgentsSkillParams>,
 ): AgentCreateParams {
   /**
    * TODO(sdk-v0.91): re-enable thinking at MAX budget
@@ -47,6 +57,7 @@ export function buildChildDefinition(
     description: "Implements one delegated GitHub issue task and validates the branch.",
     model: cfg.models.child,
     system: prompts.child,
+    skills: [...systemSkills],
     mcp_servers: mcpServerParams,
     tools: [AGENT_TOOLSET, ...mcpToolsetParams],
     metadata: CHILD_METADATA,
