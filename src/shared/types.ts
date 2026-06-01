@@ -17,6 +17,30 @@ export type AgentState = {
   createdAt: string;
 };
 
+export type AgentRegistryState = {
+  parentAgentId: string;
+  parentAgentVersion: number;
+  childAgentId: string;
+  childAgentVersion: number;
+  definitionHash: string;
+  parentDefinitionHash?: string | null;
+  childDefinitionHash?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+export type PersistedAgentRegistryState = AgentRegistryState & {
+  parentDefinitionHash: string;
+  childDefinitionHash: string;
+};
+
+export type DefaultEnvironmentState = {
+  environmentId: string;
+  definitionHash: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RunState = {
   runId: string;
   issueNumber: number | null;

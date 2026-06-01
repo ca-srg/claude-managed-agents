@@ -29,6 +29,8 @@ import type {
   SessionUsageRow,
 } from "@/shared/persistence/schemas";
 import {
+  AgentRegistryStateSchema,
+  DefaultEnvironmentStateSchema,
   EditablePromptKeySchema,
   emptySessionUsage,
   emptyUsageAggregate,
@@ -81,6 +83,8 @@ import {
 } from "@/shared/run-origin";
 import type { SessionResult } from "@/shared/session";
 import type {
+  AgentRegistryState,
+  DefaultEnvironmentState,
   RunEvent,
   RunEventKind,
   RunPhase,
@@ -263,6 +267,25 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled
     ON mcp_servers(enabled);
+  CREATE TABLE IF NOT EXISTS agent_registry_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    parent_agent_id TEXT NOT NULL,
+    parent_agent_version INTEGER NOT NULL,
+    child_agent_id TEXT NOT NULL,
+    child_agent_version INTEGER NOT NULL,
+    definition_hash TEXT NOT NULL,
+    parent_definition_hash TEXT,
+    child_definition_hash TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS default_environment_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    environment_id TEXT NOT NULL,
+    definition_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS repo_chat_state (
     id INTEGER PRIMARY KEY CHECK(id = 1),
     agent_id TEXT,
@@ -614,6 +637,25 @@ type RepoChatStateDbRow = {
   updatedAt: string;
 };
 
+type AgentRegistryStateDbRow = {
+  parentAgentId: string;
+  parentAgentVersion: number;
+  childAgentId: string;
+  childAgentVersion: number;
+  definitionHash: string;
+  parentDefinitionHash: string | null;
+  childDefinitionHash: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type DefaultEnvironmentStateDbRow = {
+  environmentId: string;
+  definitionHash: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type RepoChatThreadSummaryRow = {
   lastChatAt: string | null;
   repo: string;
@@ -763,6 +805,14 @@ type PreparedStatements = {
     unknown,
     [string, McpPermissionPolicy, number, string, number]
   >;
+  // Global agent registry / default environment state
+  getAgentRegistryState: StatementLike<AgentRegistryStateDbRow, []>;
+  upsertAgentRegistryState: StatementLike<
+    unknown,
+    [string, number, string, number, string, string | null, string | null, string, string]
+  >;
+  getDefaultEnvironmentState: StatementLike<DefaultEnvironmentStateDbRow, []>;
+  upsertDefaultEnvironmentState: StatementLike<unknown, [string, string, string, string]>;
   // Repository chat
   getRepoChatState: StatementLike<RepoChatStateDbRow, []>;
   upsertRepoChatAgentState: StatementLike<unknown, [string, number, string, string]>;
@@ -2120,7 +2170,67 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
              permission_policy = ?2,
              enabled = ?3,
              updated_at = ?4
-         WHERE id = ?5 AND is_builtin = 1`,
+          WHERE id = ?5 AND is_builtin = 1`,
+      ),
+      getAgentRegistryState: db.query<AgentRegistryStateDbRow, []>(
+        `SELECT
+           parent_agent_id AS parentAgentId,
+           parent_agent_version AS parentAgentVersion,
+           child_agent_id AS childAgentId,
+           child_agent_version AS childAgentVersion,
+           definition_hash AS definitionHash,
+           parent_definition_hash AS parentDefinitionHash,
+           child_definition_hash AS childDefinitionHash,
+           created_at AS createdAt,
+           updated_at AS updatedAt
+         FROM agent_registry_state
+         WHERE id = 1`,
+      ),
+      upsertAgentRegistryState: db.query(
+        `INSERT INTO agent_registry_state (
+           id,
+           parent_agent_id,
+           parent_agent_version,
+           child_agent_id,
+           child_agent_version,
+           definition_hash,
+           parent_definition_hash,
+           child_definition_hash,
+           created_at,
+           updated_at
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+           parent_agent_id = excluded.parent_agent_id,
+           parent_agent_version = excluded.parent_agent_version,
+           child_agent_id = excluded.child_agent_id,
+           child_agent_version = excluded.child_agent_version,
+           definition_hash = excluded.definition_hash,
+           parent_definition_hash = excluded.parent_definition_hash,
+           child_definition_hash = excluded.child_definition_hash,
+           created_at = excluded.created_at,
+           updated_at = excluded.updated_at`,
+      ),
+      getDefaultEnvironmentState: db.query<DefaultEnvironmentStateDbRow, []>(
+        `SELECT
+           environment_id AS environmentId,
+           definition_hash AS definitionHash,
+           created_at AS createdAt,
+           updated_at AS updatedAt
+         FROM default_environment_state
+         WHERE id = 1`,
+      ),
+      upsertDefaultEnvironmentState: db.query(
+        `INSERT INTO default_environment_state (
+           id,
+           environment_id,
+           definition_hash,
+           created_at,
+           updated_at
+         ) VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+           environment_id = excluded.environment_id,
+           definition_hash = excluded.definition_hash,
+           updated_at = excluded.updated_at`,
       ),
       getRepoChatState: db.query<RepoChatStateDbRow, []>(
         `SELECT
@@ -3557,6 +3667,16 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     return parsed;
   }
 
+  function parseAgentRegistryStateRow(row: AgentRegistryStateDbRow): AgentRegistryState {
+    return AgentRegistryStateSchema.parse(row);
+  }
+
+  function parseDefaultEnvironmentStateRow(
+    row: DefaultEnvironmentStateDbRow,
+  ): DefaultEnvironmentState {
+    return DefaultEnvironmentStateSchema.parse(row);
+  }
+
   function parseRepoChatStateRow(row: RepoChatStateDbRow): RepoChatState {
     return RepoChatStateSchema.parse(row);
   }
@@ -3717,6 +3837,59 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
 
     const changes = readChanges(getRuntime().statements.deleteMcpServer.run(id));
     return { deleted: changes > 0 };
+  }
+
+  function getAgentRegistryState(): AgentRegistryState | null {
+    const row = getRuntime().statements.getAgentRegistryState.get();
+    return row == null ? null : parseAgentRegistryStateRow(row);
+  }
+
+  function setAgentRegistryState(input: AgentRegistryState): void {
+    const now = new Date().toISOString();
+    const parsed = AgentRegistryStateSchema.parse({
+      ...input,
+      childDefinitionHash: input.childDefinitionHash ?? null,
+      parentDefinitionHash: input.parentDefinitionHash ?? null,
+      updatedAt: now,
+    });
+
+    getRuntime().statements.upsertAgentRegistryState.run(
+      parsed.parentAgentId,
+      parsed.parentAgentVersion,
+      parsed.childAgentId,
+      parsed.childAgentVersion,
+      parsed.definitionHash,
+      parsed.parentDefinitionHash,
+      parsed.childDefinitionHash,
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
+  }
+
+  function getDefaultEnvironmentState(): DefaultEnvironmentState | null {
+    const row = getRuntime().statements.getDefaultEnvironmentState.get();
+    return row == null ? null : parseDefaultEnvironmentStateRow(row);
+  }
+
+  function setDefaultEnvironmentState(input: {
+    definitionHash: string;
+    environmentId: string;
+  }): void {
+    const now = new Date().toISOString();
+    const existingState = getDefaultEnvironmentState();
+    const parsed = DefaultEnvironmentStateSchema.parse({
+      definitionHash: input.definitionHash,
+      environmentId: input.environmentId,
+      createdAt: existingState?.createdAt ?? now,
+      updatedAt: now,
+    });
+
+    getRuntime().statements.upsertDefaultEnvironmentState.run(
+      parsed.environmentId,
+      parsed.definitionHash,
+      parsed.createdAt,
+      parsed.updatedAt,
+    );
   }
 
   function getRepoChatState(): RepoChatState | null {
@@ -3880,6 +4053,8 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     deleteMcpServer,
     deleteRepoEnvironment,
     deleteRepoPrompt,
+    getAgentRegistryState,
+    getDefaultEnvironmentState,
     getGlobalUsageAggregate,
     getMcpServerById,
     getMcpServerByName,
@@ -3937,6 +4112,8 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     saveRepoEnvironmentRevision,
     saveRepoPromptRevision,
     seedPromptIfMissing,
+    setAgentRegistryState,
+    setDefaultEnvironmentState,
     setRepoChatAgentState,
     setRepoChatEnvironmentState,
     setRepoEnvironmentAnthropicState,

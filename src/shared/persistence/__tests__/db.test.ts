@@ -540,6 +540,70 @@ describe("createDbModule", () => {
       "run-a-running",
     ]);
   });
+
+  test("agent registry state round-trips through SQLite", () => {
+    expect(dbModule.getAgentRegistryState()).toBeNull();
+
+    dbModule.setAgentRegistryState({
+      parentAgentId: "agt_parent",
+      parentAgentVersion: 3,
+      childAgentId: "agt_child",
+      childAgentVersion: 2,
+      definitionHash: "combined-hash",
+      parentDefinitionHash: "parent-hash",
+      childDefinitionHash: "child-hash",
+      createdAt: "2026-04-24T00:00:00.000Z",
+    });
+
+    const persistedState = dbModule.getAgentRegistryState();
+
+    expect(typeof persistedState?.updatedAt).toBe("string");
+    expect(persistedState).toEqual({
+      parentAgentId: "agt_parent",
+      parentAgentVersion: 3,
+      childAgentId: "agt_child",
+      childAgentVersion: 2,
+      definitionHash: "combined-hash",
+      parentDefinitionHash: "parent-hash",
+      childDefinitionHash: "child-hash",
+      createdAt: "2026-04-24T00:00:00.000Z",
+      updatedAt: persistedState?.updatedAt,
+    });
+  });
+
+  test("default environment state round-trips and updates in place", () => {
+    expect(dbModule.getDefaultEnvironmentState()).toBeNull();
+
+    dbModule.setDefaultEnvironmentState({
+      definitionHash: "env-hash-v1",
+      environmentId: "env_1",
+    });
+    const firstState = dbModule.getDefaultEnvironmentState();
+
+    expect(typeof firstState?.createdAt).toBe("string");
+    expect(typeof firstState?.updatedAt).toBe("string");
+    expect(firstState).toEqual({
+      definitionHash: "env-hash-v1",
+      environmentId: "env_1",
+      createdAt: firstState?.createdAt,
+      updatedAt: firstState?.updatedAt,
+    });
+
+    dbModule.setDefaultEnvironmentState({
+      definitionHash: "env-hash-v2",
+      environmentId: "env_2",
+    });
+
+    const updatedState = dbModule.getDefaultEnvironmentState();
+
+    expect(typeof updatedState?.updatedAt).toBe("string");
+    expect(updatedState).toEqual({
+      definitionHash: "env-hash-v2",
+      environmentId: "env_2",
+      createdAt: firstState?.createdAt,
+      updatedAt: updatedState?.updatedAt,
+    });
+  });
 });
 
 describe("createDbModule pid migration", () => {
