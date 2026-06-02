@@ -1,0 +1,36 @@
+name: Codex Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+
+permissions:
+  pull-requests: write # comment "@codex review" on the PR
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  request-review:
+    name: Request Codex review
+    runs-on: ubuntu-latest
+    # Skip drafts, forked-PR heads (secrets such as PAT are not exposed to fork
+    # PRs, so the comment step cannot authenticate), and bot-authored PRs (avoid
+    # review noise and @codex feedback loops).
+    if: >-
+      ${{
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.type != 'Bot'
+      }}
+    steps:
+      - name: Comment "@codex review"
+        env:
+          GH_TOKEN: ${{ secrets.PAT }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body "@codex review"

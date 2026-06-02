@@ -2,8 +2,22 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { rm } from "node:fs/promises";
+import { registerRepository } from "./e2e-real";
 
 const RUN_ID_PATH = "/tmp/ghissue-runid";
+
+type BunServer = {
+  port: number;
+  stop(force?: boolean): void;
+};
+
+declare const Bun: {
+  serve(options: {
+    fetch: (request: Request) => Response | Promise<Response>;
+    hostname?: string;
+    port?: number;
+  }): BunServer;
+};
 
 type HarnessRun = {
   exitCode: number;
@@ -82,6 +96,39 @@ afterEach(async () => {
 });
 
 describe("e2e-real gate and validation", () => {
+  test("registerRepository posts TEST_REPO to dashboard registration route", async () => {
+    const requests: Array<{ body: string; contentType: string | null; method: string; path: string }> = [];
+    const server = Bun.serve({
+      async fetch(request) {
+        const url = new URL(request.url);
+        requests.push({
+          body: await request.text(),
+          contentType: request.headers.get("content-type"),
+          method: request.method,
+          path: url.pathname,
+        });
+        return new Response(null, { headers: { location: "/repositories" }, status: 302 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+
+    try {
+      await registerRepository(`http://127.0.0.1:${server.port}`, "example-owner/example-repo");
+    } finally {
+      server.stop(true);
+    }
+
+    expect(requests).toEqual([
+      {
+        body: "repo=example-owner%2Fexample-repo",
+        contentType: "application/x-www-form-urlencoded",
+        method: "POST",
+        path: "/repositories",
+      },
+    ]);
+  });
+
   test("E2E unset -> exit 0 with skip message", async () => {
     const harnessOutcome = await runHarness({
       TEST_ISSUE: "1",

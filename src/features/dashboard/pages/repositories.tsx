@@ -7,6 +7,7 @@ import { formatTokens, formatUsd, totalTokenVolume } from "@/shared/pricing";
 
 export type Repository = {
   repo: string; // "owner/name"
+  enabled: boolean;
   runCount: number;
   lastRunAt: string | null; // ISO timestamp
   usage: UsageAggregate;
@@ -46,7 +47,7 @@ export const RepositoriesPage: FC<RepositoriesPageProps> = (props) => {
         {props.globalUsage.modelRequestCount > 0 && (
           <GlobalUsageBanner usage={props.globalUsage} repoCount={usageRepoCount} />
         )}
-        <AddPolledRepositoryCard
+        <RegisterRepositoryCard
           botMention={props.triggerBotMention}
           triggerLabel={props.triggerLabel}
         />
@@ -64,22 +65,22 @@ export const RepositoriesPage: FC<RepositoriesPageProps> = (props) => {
   );
 };
 
-const AddPolledRepositoryCard: FC<{ botMention: string; triggerLabel: string }> = ({
+const RegisterRepositoryCard: FC<{ botMention: string; triggerLabel: string }> = ({
   botMention,
   triggerLabel,
 }) => (
   <article class="bg-surface border border-neutral-200 rounded-xl p-6 space-y-5 shadow-sm animate-fade-in-up">
     <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
       <div class="space-y-2 max-w-3xl">
-        <h2 class="text-xl font-semibold text-neutral-900">
-          {t("Watch a repository for auto-trigger")}
-        </h2>
+        <h2 class="text-xl font-semibold text-neutral-900">{t("Register a repository")}</h2>
         <p class="text-sm text-neutral-500">
           {t("Add an")}{" "}
           <code class="font-mono text-neutral-700 bg-neutral-100 px-1 py-0.5 rounded">
             owner/name
           </code>{" "}
-          {t("to poll for")}{" "}
+          {t(
+            "to the shared workspace. Runs use enabled registered repositories, and polling can watch for",
+          )}{" "}
           <code class="font-mono text-neutral-700 bg-neutral-100 px-1 py-0.5 rounded">
             @{botMention} run
           </code>{" "}
@@ -93,7 +94,7 @@ const AddPolledRepositoryCard: FC<{ botMention: string; triggerLabel: string }> 
 
       <form
         method="post"
-        action="/polled-repos"
+        action="/repositories"
         class="flex flex-col sm:flex-row gap-3 lg:min-w-[28rem]"
       >
         <label htmlFor="polled-repo" class="sr-only">
@@ -112,7 +113,7 @@ const AddPolledRepositoryCard: FC<{ botMention: string; triggerLabel: string }> 
           type="submit"
           class="inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-white bg-brand-600 border border-transparent rounded-md hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500 transition-colors whitespace-nowrap"
         >
-          {t("Add to polled list")}
+          {t("Register repository")}
         </button>
       </form>
     </div>
@@ -202,6 +203,11 @@ const RepoCard: FC<{ repo: Repository; delayMs: number }> = ({ repo, delayMs }) 
           </span>
           {repo.polledTrigger.configured && (
             <PolledTriggerBadge enabled={repo.polledTrigger.enabled} />
+          )}
+          {!repo.enabled && (
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full border bg-warning-50 text-warning-700 border-warning-200 font-mono text-[11px] font-semibold uppercase tracking-wide">
+              {t("disabled")}
+            </span>
           )}
         </div>
         <time class="text-neutral-500 font-mono" datetime={repo.lastRunAt ?? ""}>

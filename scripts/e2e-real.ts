@@ -410,6 +410,28 @@ async function postRun(baseUrl: string, config: RuntimeConfig, signal: AbortSign
   return payload.runId;
 }
 
+export async function registerRepository(
+  baseUrl: string,
+  repo: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const form = new URLSearchParams();
+  form.set("repo", repo);
+
+  const response = await fetch(`${baseUrl}/repositories`, {
+    body: form,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+    redirect: "manual",
+    signal,
+  });
+  const responseText = await response.text();
+
+  if (response.status !== 302 && response.status !== 303) {
+    throw new Error(`POST /repositories returned ${response.status}: ${responseText}`);
+  }
+}
+
 function parseSseFrame(frame: string): SseMessage | undefined {
   const dataLines: string[] = [];
   let event: string | undefined;
@@ -628,6 +650,7 @@ async function runHarness(config: RuntimeConfig, env: NodeJS.ProcessEnv): Promis
 
   try {
     await waitForServerReady(baseUrl, controller.signal);
+    await registerRepository(baseUrl, config.repo, controller.signal);
     const runId = await postRun(baseUrl, config, controller.signal);
     return await waitForCompleteEvent(baseUrl, runId, controller.signal);
   } catch (error) {

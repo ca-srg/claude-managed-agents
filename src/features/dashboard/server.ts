@@ -364,32 +364,27 @@ function repositoriesResponse(
   const globalUsage = db.getGlobalUsageAggregate();
   const repoUsageByRepo = db.listRepoUsageAggregates();
   const polledByRepo = new Map(db.listPolledRepositories().map((row) => [row.repo, row]));
+  const runSummariesByRepo = new Map(
+    db.listRepositories().map((summary) => [summary.repo, summary]),
+  );
 
-  const repoSummaries = new Map<
-    string,
-    { repo: string; runCount: number; lastRunAt: string | null }
-  >();
-  for (const summary of db.listRepositories()) {
-    repoSummaries.set(summary.repo, summary);
-  }
-  // Surface polled repos that have not run yet so they remain discoverable
-  // immediately after being added via the form.
-  for (const polled of polledByRepo.values()) {
-    if (!repoSummaries.has(polled.repo)) {
-      repoSummaries.set(polled.repo, { lastRunAt: null, repo: polled.repo, runCount: 0 });
-    }
-  }
-
-  const repositories: Repository[] = [...repoSummaries.values()]
-    .map((summary) => {
-      const polled = polledByRepo.get(summary.repo);
+  const repositories: Repository[] = db
+    .listRegisteredRepositories()
+    .map((registered) => {
+      const summary = runSummariesByRepo.get(registered.repo) ?? {
+        lastRunAt: null,
+        repo: registered.repo,
+        runCount: 0,
+      };
+      const polled = polledByRepo.get(registered.repo);
       return {
         ...summary,
+        enabled: registered.enabled,
         polledTrigger: {
           configured: polled !== undefined,
           enabled: polled?.enabled ?? false,
         },
-        usage: repoUsageByRepo.get(summary.repo) ?? emptyUsageAggregate(),
+        usage: repoUsageByRepo.get(registered.repo) ?? emptyUsageAggregate(),
       };
     })
     .sort((a, b) => {
@@ -449,6 +444,10 @@ function listMcpServerEntries(db: DbModule): McpServerEntry[] {
 
 function linearMcpEnabled(db: DbModule): boolean {
   return hasEnabledLinearMcpServer(db.listMcpServers());
+}
+
+function enabledRegisteredRepositorySlugs(db: DbModule): string[] {
+  return db.listRegisteredRepositories({ enabledOnly: true }).map((repository) => repository.repo);
 }
 
 function getMcpServersNotice(notice: string | undefined): McpServersPageProps["notice"] {
@@ -1534,6 +1533,31 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
   // removes go through these routes. The poller picks up changes on its
   // next cycle by re-querying `polled_repositories`.
 
+  app.post("/repositories", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const form = await c.req.parseBody();
+    const rawRepo = typeof form.repo === "string" ? form.repo.trim() : "";
+    const parsedRepo = RepoSlugSchema.safeParse(rawRepo);
+    if (!parsedRepo.success) {
+      return htmlPage(
+        c,
+        () =>
+          BadRequestPage({ message: `invalid repo slug "${rawRepo}" — must look like owner/name` }),
+        400,
+      );
+    }
+
+    try {
+      db.addRegisteredRepository(parsedRepo.data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "invalid repo slug";
+      logger?.warn({ err, repo: parsedRepo.data }, "rejected repository registration request");
+      return htmlPage(c, () => BadRequestPage({ message }), 400);
+    }
+
+    return c.redirect("/repositories", 302);
+  });
+
   app.post("/polled-repos", async (c) => {
     c.header("Cache-Control", "no-store");
     const form = await c.req.parseBody();
@@ -2061,17 +2085,27 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
   app.get("/favicon.ico", (c) => c.body(null, 204));
 
   app.get("/runs/new", (c) => {
-    return htmlPage(c, () => RunNewPage({ linearMcpEnabled: linearMcpEnabled(db) }));
+    const enabledRepositories = enabledRegisteredRepositorySlugs(db);
+    return htmlPage(c, () =>
+      RunNewPage({
+        enabledRepositories,
+        linearMcpEnabled: linearMcpEnabled(db),
+        registeredRepositoryCount: enabledRepositories.length,
+      }),
+    );
   });
 
   app.post("/runs/new", async (c) => {
     if (!opts.runQueue) {
+      const enabledRepositories = enabledRegisteredRepositorySlugs(db);
       return htmlPage(
         c,
         () =>
           RunNewPage({
+            enabledRepositories,
             errors: { _form: "runQueue is not configured for this dashboard" },
             linearMcpEnabled: linearMcpEnabled(db),
+            registeredRepositoryCount: enabledRepositories.length,
           }),
         503,
       );
@@ -2080,19 +2114,18 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
     const form = await c.req.parseBody();
     const linearEnabled = linearMcpEnabled(db);
     const origin = linearEnabled ? String(form.origin ?? "github_issue") : "github_issue";
-    const rawIssue = String(form.issue ?? "");
-    const issue = Number(rawIssue);
+    const issue = String(form.issue ?? "").trim();
     const linearIssue = String(form.linearIssue ?? "").trim();
-    const repo = String(form.repo ?? "");
+    const repo = String(form.repo ?? "").trim();
     const dryRun = form.dryRun === "on";
     const vaultId = form.vaultId ? String(form.vaultId) : undefined;
     const configPath = form.configPath ? String(form.configPath) : undefined;
+    const enabledRepositories = enabledRegisteredRepositorySlugs(db);
 
     const parsed = RunStartInputSchema.safeParse({
       ...(origin === "github_issue" ? { issue } : {}),
-      ...(origin === "linear_issue" ? { linearIssue } : {}),
+      ...(origin === "linear_issue" ? { linearIssue, repo } : {}),
       origin,
-      repo,
       dryRun,
       vaultId,
       configPath,
@@ -2109,6 +2142,7 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
         c,
         () =>
           RunNewPage({
+            enabledRepositories,
             values: {
               issue: form.issue as string,
               linearIssue: form.linearIssue as string,
@@ -2120,12 +2154,37 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
             },
             errors,
             linearMcpEnabled: linearEnabled,
+            registeredRepositoryCount: enabledRepositories.length,
           }),
         400,
       );
     }
 
-    const { runId } = opts.runQueue.enqueue(parsed.data);
+    let runId: string;
+    try {
+      ({ runId } = opts.runQueue.enqueue(parsed.data));
+    } catch (error) {
+      return htmlPage(
+        c,
+        () =>
+          RunNewPage({
+            enabledRepositories,
+            values: {
+              issue: form.issue as string,
+              linearIssue: form.linearIssue as string,
+              origin: origin === "linear_issue" ? "linear_issue" : "github_issue",
+              repo: form.repo as string,
+              dryRun,
+              vaultId: form.vaultId as string,
+              configPath: form.configPath as string,
+            },
+            errors: { _form: error instanceof Error ? error.message : String(error) },
+            linearMcpEnabled: linearEnabled,
+            registeredRepositoryCount: enabledRepositories.length,
+          }),
+        400,
+      );
+    }
     return c.redirect(`/runs/${runId}/live`, 303);
   });
 

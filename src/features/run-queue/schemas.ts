@@ -3,8 +3,19 @@ import { z } from "zod";
 const BaseRunStartInputSchema = {
   configPath: z.string().min(1).optional(),
   dryRun: z.boolean().default(false),
-  repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must match owner/name"),
+  repo: z
+    .string()
+    .regex(/^[^/]+\/[^/]+$/, "repo must match owner/name")
+    .optional(),
+  repositories: z
+    .array(z.string().regex(/^[^/]+\/[^/]+$/, "repo must match owner/name"))
+    .optional(),
   vaultId: z.string().min(1).optional(),
+};
+
+const RequiredRepoRunStartInputSchema = {
+  ...BaseRunStartInputSchema,
+  repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must match owner/name"),
 };
 
 const GitHubIssueRunStartInputSchema = z
@@ -17,7 +28,7 @@ const GitHubIssueRunStartInputSchema = z
 
 const LinearIssueRunStartInputSchema = z
   .object({
-    ...BaseRunStartInputSchema,
+    ...RequiredRepoRunStartInputSchema,
     linearIssue: z.string().min(1),
     origin: z.literal("linear_issue"),
   })
@@ -29,7 +40,62 @@ function withDefaultRunOrigin(value: unknown): unknown {
   }
 
   const record = value as Record<string, unknown>;
-  return record.origin === undefined ? { ...record, origin: "github_issue" } : value;
+  const withOrigin = record.origin === undefined ? { ...record, origin: "github_issue" } : record;
+  if (withOrigin.origin !== "github_issue") {
+    return withOrigin;
+  }
+
+  const normalizedIssue = normalizeGitHubIssueRef(withOrigin.issue);
+  if (normalizedIssue === null) {
+    return withOrigin;
+  }
+
+  return {
+    ...withOrigin,
+    issue: normalizedIssue.issue,
+    repo: normalizeGitHubIssueRepo(withOrigin.repo, normalizedIssue.repo),
+  };
+}
+
+function normalizeGitHubIssueRepo(
+  explicitRepo: unknown,
+  issueUrlRepo: string | undefined,
+): unknown {
+  if (typeof explicitRepo !== "string") {
+    return issueUrlRepo;
+  }
+
+  if (issueUrlRepo !== undefined && explicitRepo !== issueUrlRepo) {
+    return "";
+  }
+
+  return explicitRepo;
+}
+
+function normalizeGitHubIssueRef(value: unknown): { issue: number; repo?: string } | null {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return { issue: value };
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const numeric = trimmed.replace(/^#/, "");
+  if (/^[1-9]\d*$/.test(numeric)) {
+    return { issue: Number(numeric) };
+  }
+
+  const match = trimmed.match(
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)(?:[/?#].*)?$/i,
+  );
+  if (!match) {
+    return null;
+  }
+
+  const [, owner, repo, issue] = match;
+  return { issue: Number(issue), repo: `${owner}/${repo}` };
 }
 
 export const RunStartInputSchema = z.preprocess(

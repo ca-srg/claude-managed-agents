@@ -378,6 +378,66 @@ describe("createDbModule", () => {
     ]);
   });
 
+  test("addRegisteredRepository re-enables an existing disabled repository", () => {
+    dbModule.addRegisteredRepository("acme/disabled");
+    capturedDb
+      ?.query("UPDATE registered_repositories SET enabled = 0, updated_at = ?1 WHERE repo = ?2")
+      .run("2026-04-24T00:00:00.000Z", "acme/disabled");
+
+    expect(dbModule.addRegisteredRepository("acme/disabled")).toEqual({ added: false });
+
+    const registered = dbModule.getRegisteredRepository("acme/disabled");
+    expect(registered?.enabled).toBe(true);
+    expect(registered?.updatedAt).not.toBe("2026-04-24T00:00:00.000Z");
+  });
+
+  test("usage aggregates attribute multi-repo runs to the primary repository only", () => {
+    dbModule.insertRun(
+      createRunState({
+        repo: "acme/primary",
+        repositories: [
+          { branch: "agent/issue-42", repo: "acme/primary", role: "primary" },
+          { branch: "agent/issue-42", repo: "acme/target", role: "target" },
+        ],
+        runId: "run-multi-repo-usage",
+      }),
+    );
+    dbModule.insertSession(
+      "run-multi-repo-usage",
+      createSessionResult({
+        model: "claude-sonnet-4-6",
+        sessionId: "session-multi-repo-usage",
+        usage: {
+          cacheCreationInputTokens: 3,
+          cacheReadInputTokens: 4,
+          inputTokens: 10,
+          modelRequestCount: 1,
+          outputTokens: 20,
+        },
+      }),
+    );
+
+    expect(dbModule.getGlobalUsageAggregate()).toMatchObject({
+      inputTokens: 10,
+      modelRequestCount: 1,
+      outputTokens: 20,
+    });
+    expect(dbModule.getRepoUsageAggregate("acme/primary")).toMatchObject({
+      inputTokens: 10,
+      modelRequestCount: 1,
+      outputTokens: 20,
+    });
+    expect(dbModule.getRepoUsageAggregate("acme/target")).toMatchObject({
+      inputTokens: 0,
+      modelRequestCount: 0,
+      outputTokens: 0,
+    });
+
+    const listed = dbModule.listRepoUsageAggregates();
+    expect(listed.get("acme/primary")).toMatchObject({ modelRequestCount: 1 });
+    expect(listed.get("acme/target")?.modelRequestCount ?? 0).toBe(0);
+  });
+
   test("getRunById returns null for a nonexistent run", () => {
     expect(dbModule.getRunById("missing-run")).toBeNull();
   });

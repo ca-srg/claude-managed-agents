@@ -8,6 +8,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 import { type CreateAppOptions, createApp } from "@/features/dashboard/server";
 import type { RepositoryChatAnthropicClient } from "@/features/repo-chat/handler";
+import { LINEAR_MCP_URL } from "@/shared/constants";
 import { createDbModule } from "@/shared/persistence/db";
 import type { SessionClient, SessionResult } from "@/shared/session";
 import type { RunState } from "@/shared/types";
@@ -735,7 +736,7 @@ describe("createApp", () => {
     expect(body).toContain("back to repositories");
   });
 
-  test("GET /runs/new returns form HTML with all 5 fields", async () => {
+  test("GET /runs/new returns form HTML with global run fields", async () => {
     const { app } = createAppWithSeededDb();
 
     const response = await app.request("/runs/new");
@@ -744,10 +745,33 @@ describe("createApp", () => {
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
     expect(body).toContain('name="issue"');
-    expect(body).toContain('name="repo"');
+    expect(body).not.toContain('name="repo"');
     expect(body).toContain('name="dryRun"');
     expect(body).toContain('name="vaultId"');
     expect(body).toContain('name="configPath"');
+  });
+
+  test("GET /runs/new shows a Linear primary repository selector when Linear MCP is enabled", async () => {
+    const { app } = createAppWithSeededDb((db) => {
+      db.addRegisteredRepository("acme/widgets");
+      db.addRegisteredRepository("acme/disabled");
+      db.setRegisteredRepositoryEnabled("acme/disabled", false);
+      db.createMcpServer({
+        name: "linear",
+        tokenEnvName: "LINEAR_TOKEN",
+        url: LINEAR_MCP_URL,
+      });
+    });
+
+    const response = await app.request("/runs/new");
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('name="origin"');
+    expect(body).toContain('name="repo"');
+    expect(body).toContain("Primary repository");
+    expect(body).toContain('<option value="acme/widgets"');
+    expect(body).not.toContain('<option value="acme/disabled"');
   });
 
   test("POST /runs/new with valid body redirects to /runs/:id/live", async () => {
@@ -759,7 +783,6 @@ describe("createApp", () => {
 
     const formData = new URLSearchParams();
     formData.append("issue", "42");
-    formData.append("repo", "acme/widgets");
     formData.append("dryRun", "on");
 
     const response = await app.request("/runs/new", {
@@ -775,6 +798,53 @@ describe("createApp", () => {
     expect(response.headers.get("Location")).toBe("/runs/run-new-1/live");
   });
 
+  test("POST /runs/new passes selected Linear primary repo to runQueue", async () => {
+    const enqueued: unknown[] = [];
+    const { app } = createAppWithSeededDb(
+      (db) => {
+        db.addRegisteredRepository("acme/widgets");
+        db.createMcpServer({
+          name: "linear",
+          tokenEnvName: "LINEAR_TOKEN",
+          url: LINEAR_MCP_URL,
+        });
+      },
+      {
+        runQueue: {
+          enqueue: (input) => {
+            enqueued.push(input);
+            return { position: 1, runId: "run-linear-new" };
+          },
+        },
+      },
+    );
+
+    const formData = new URLSearchParams();
+    formData.append("origin", "linear_issue");
+    formData.append("linearIssue", "ENG-123");
+    formData.append("repo", "acme/widgets");
+
+    const response = await app.request("/runs/new", {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/runs/run-linear-new/live");
+    expect(enqueued).toEqual([
+      {
+        dryRun: false,
+        linearIssue: "ENG-123",
+        origin: "linear_issue",
+        repo: "acme/widgets",
+      },
+    ]);
+  });
+
   test("POST /runs/new with invalid body returns 400 with inline error", async () => {
     const { app } = createAppWithSeededDb(undefined, {
       runQueue: {
@@ -783,7 +853,6 @@ describe("createApp", () => {
     });
 
     const formData = new URLSearchParams();
-    formData.append("repo", "acme/widgets");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -799,7 +868,6 @@ describe("createApp", () => {
     expect(body).toContain("<!doctype html>");
     expect(body).toContain("Issue number must be a positive integer.");
     expect(body).not.toContain("Expected number, received nan");
-    expect(body).toContain('value="acme/widgets"');
   });
 
   test("POST /runs/new localizes validation errors", async () => {
@@ -810,7 +878,6 @@ describe("createApp", () => {
     });
 
     const formData = new URLSearchParams();
-    formData.append("repo", "not-a-slug");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -824,7 +891,6 @@ describe("createApp", () => {
 
     expect(response.status).toBe(400);
     expect(body).toContain("Issue 番号は正の整数である必要があります");
-    expect(body).toContain("リポジトリは owner/repository 形式で入力してください");
     expect(body).not.toContain("Expected number, received nan");
   });
 
@@ -833,7 +899,6 @@ describe("createApp", () => {
 
     const formData = new URLSearchParams();
     formData.append("issue", "42");
-    formData.append("repo", "acme/widgets");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -1400,16 +1465,37 @@ describe("createApp", () => {
     expect(body).toContain("polled (paused)");
   });
 
-  test("GET /repositories renders the add polled repository form with default trigger labels", async () => {
+  test("GET /repositories renders the repository registration form with default trigger labels", async () => {
     const { app } = createAppWithSeededDb();
 
     const response = await app.request("/repositories");
     const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain('action="/polled-repos"');
-    expect(body).toContain("Watch a repository for auto-trigger");
+    expect(body).toContain('action="/repositories"');
+    expect(body).toContain("Register a repository");
     expect(body).toContain('placeholder="acme/widgets"');
+  });
+
+  test("POST /repositories with new slug registers repo and redirects to list", async () => {
+    const { app, db } = createAppWithSeededDb();
+
+    const formData = new URLSearchParams();
+    formData.append("repo", "acme/widgets");
+
+    const response = await app.request("/repositories", {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe("/repositories");
+    const registered = db.getRegisteredRepository("acme/widgets");
+    expect(registered?.enabled).toBe(true);
   });
 
   test("POST /polled-repos with new slug adds repo and redirects to detail page", async () => {

@@ -32,9 +32,11 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain("GitHub App GitHub Operations skill");
     expect(prompt).toContain("GitHub MCP/API issue-read tool");
     expect(prompt).toContain(
-      "git fetch && git checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git checkout -B agent/issue-123/fix-bug origin/main",
+      "git -C /workspace/claude-managed-agents fetch && (git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/main)",
     );
-    expect(prompt).toContain("git pull --ff-only origin agent/issue-123/fix-bug || true");
+    expect(prompt).toContain(
+      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
+    );
     expect(prompt).toContain("Commit style = conventional");
     expect(prompt).toContain(
       "Git identity = claude-agent[bot]/claude-agent@users.noreply.github.com",
@@ -82,6 +84,21 @@ describe("buildParentPrompt", () => {
     expect(prompt).not.toContain("{authorName}");
     expect(prompt).not.toContain("{authorEmail}");
     expect(prompt).not.toContain("{baseBranch}");
+  });
+
+  it("scopes checkout-first failure tolerance to pull only", () => {
+    const prompt = buildParentPrompt(defaultParams);
+    const checkoutCommand = prompt.match(/checkout-first: `([^`]+)`/)?.[1];
+
+    expect(checkoutCommand).toBeDefined();
+    expect(checkoutCommand).toContain("git -C /workspace/claude-managed-agents fetch &&");
+    expect(checkoutCommand).toContain(
+      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
+    );
+    expect(checkoutCommand).not.toContain(
+      "origin/main) && git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true",
+    );
+    expect(checkoutCommand?.endsWith("|| true)")).toBe(true);
   });
 
   it("instructs Linear-origin runs to create or reuse Linear sub-issues before delegation", () => {
@@ -167,6 +184,47 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain(repoPrompt);
     expect(prompt).toContain(repoContext);
     expect(prompt.indexOf(repoPrompt) < prompt.indexOf(repoContext)).toBe(true);
+  });
+
+  it("renders multi-repo prompt overrides before repository context and skips blank entries", () => {
+    const primaryPrompt = "Primary repo rule.";
+    const targetPrompt = "Target repo rule.";
+    const repoContext = "## Context for owner/name\n\nUse Bun.";
+    const prompt = buildParentPrompt({
+      ...defaultParams,
+      repoContext,
+      repoPrompts: [
+        {
+          repoName: "name",
+          repoOwner: "owner",
+          repoPrompt: primaryPrompt,
+        },
+        {
+          repoName: "api",
+          repoOwner: "owner",
+          repoPrompt: targetPrompt,
+        },
+        {
+          repoName: "empty",
+          repoOwner: "owner",
+          repoPrompt: "   ",
+        },
+        {
+          repoName: "null-body",
+          repoOwner: "owner",
+          repoPrompt: null,
+        },
+      ],
+    });
+
+    expect(prompt).toContain("## Repository-specific instructions for owner/name");
+    expect(prompt).toContain(primaryPrompt);
+    expect(prompt).toContain("## Repository-specific instructions for owner/api");
+    expect(prompt).toContain(targetPrompt);
+    expect(prompt).not.toContain("owner/empty");
+    expect(prompt).not.toContain("owner/null-body");
+    expect(prompt.indexOf(primaryPrompt) < prompt.indexOf(repoContext)).toBe(true);
+    expect(prompt.indexOf(targetPrompt) < prompt.indexOf(repoContext)).toBe(true);
   });
 
   it("treats blank or whitespace-only override as absent", () => {

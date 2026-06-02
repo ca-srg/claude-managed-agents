@@ -608,6 +608,120 @@ describe("runIssueOrchestration", () => {
     expect(sentContent.text).toContain("CLAUDE.md: Use Bun and Biome.");
   });
 
+  test("primary repository parent prompt override is included in the parent prompt", async () => {
+    const repoPrompt = "Use the repo-specific parent instructions.";
+    const harness = createHarness({
+      buildParentPrompt: ((args) =>
+        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompts?.[0]?.repoPrompt ?? ""}`) as RunExecutionDeps["buildParentPrompt"],
+    });
+    const db = harness.deps.db;
+    if (db === undefined) {
+      throw new Error("expected mock DB");
+    }
+    harness.deps.db = {
+      ...db,
+      getRepoPrompt: (repo, agent) => {
+        expect(repo).toBe("owner/name");
+        expect(agent).toBe("parent");
+        return {
+          agent,
+          body: repoPrompt,
+          currentRevisionId: 1,
+          repo,
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        };
+      },
+    };
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-repo-parent-prompt" },
+      harness.deps,
+    );
+
+    const sentEvent = harness.fakeAnthropic.calls.sends[0]?.params.events?.[0];
+    if (sentEvent?.type !== "user.message") {
+      throw new Error("expected parent prompt user message event");
+    }
+    const sentContent = sentEvent.content[0];
+    if (sentContent?.type !== "text") {
+      throw new Error("expected parent prompt text event");
+    }
+
+    expect(result.status).toBe("completed");
+    expect(sentContent.text).toContain(repoPrompt);
+  });
+
+  test("multi-repo parent prompt overrides are loaded for all targets", async () => {
+    const githubAccess = {
+      authMode: "app",
+      authorizationToken: "test_multi_repo_prompt_token",
+      installationId: 12345,
+      octokit: { token: "test_multi_repo_prompt_token" },
+      permissions: {
+        contents: "write",
+        issues: "write",
+        pull_requests: "write",
+      },
+      repositorySelection: "selected",
+    };
+    const getRepoPromptCalls: Array<{ agent: string; repo: string }> = [];
+    const harness = createHarness({
+      buildParentPrompt: ((args) =>
+        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompts
+          ?.map((entry) => `${entry.repoOwner}/${entry.repoName}: ${entry.repoPrompt ?? ""}`)
+          .join("\n")}`) as RunExecutionDeps["buildParentPrompt"],
+      githubAuth: {
+        resolveRepositoriesAccess: async () => githubAccess,
+        resolveRepositoryAccess: async () => githubAccess,
+      } as unknown as RunExecutionDeps["githubAuth"],
+    });
+    const db = harness.deps.db;
+    if (db === undefined) {
+      throw new Error("expected mock DB");
+    }
+    harness.deps.db = {
+      ...db,
+      getRepoPrompt: (repo, agent) => {
+        getRepoPromptCalls.push({ agent, repo });
+        return {
+          agent,
+          body: `${repo} parent override`,
+          currentRevisionId: 1,
+          repo,
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        };
+      },
+    };
+
+    const result = await runIssueOrchestration(
+      {
+        dryRun: false,
+        issue: 42,
+        repo: "owner/name",
+        repositories: ["owner/api"],
+        runId: "run-multi-repo-parent-prompts",
+      },
+      harness.deps,
+    );
+
+    const sentEvent = harness.fakeAnthropic.calls.sends[0]?.params.events?.[0];
+    if (sentEvent?.type !== "user.message") {
+      throw new Error("expected parent prompt user message event");
+    }
+    const sentContent = sentEvent.content[0];
+    if (sentContent?.type !== "text") {
+      throw new Error("expected parent prompt text event");
+    }
+
+    expect(result.status).toBe("completed");
+    expect(getRepoPromptCalls).toEqual([
+      { agent: "parent", repo: "owner/name" },
+      { agent: "parent", repo: "owner/api" },
+    ]);
+    expect(sentContent.text).toContain("owner/name parent override");
+    expect(sentContent.text).toContain("owner/api parent override");
+  });
+
   test("parent session checks out the base branch, not the not-yet-created work branch", async () => {
     const harness = createHarness();
 
@@ -629,6 +743,109 @@ describe("runIssueOrchestration", () => {
     // parent/child agents create the work branch from the base branch inside
     // the session, so the initial checkout MUST target the base branch.
     expect(resource.checkout).toEqual({ name: "main", type: "branch" });
+  });
+
+  test("single-repo run uses repo-specific environment packages and persists Anthropic state", async () => {
+    const packages = {
+      apt: ["libpq-dev"],
+      cargo: [],
+      gem: [],
+      go: [],
+      npm: ["tsx"],
+      pip: ["pytest"],
+    };
+    const scenarios = [
+      {
+        created: true,
+        environmentId: "env-repo-created",
+        hash: "repo-hash-created",
+        updated: false,
+      },
+      {
+        created: false,
+        environmentId: "env-repo-updated",
+        hash: "repo-hash-updated",
+        updated: true,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const ensureRepoInputs: Array<Parameters<RunExecutionDeps["ensureEnvironmentForRepo"]>[1]> =
+        [];
+      const savedStates: Array<{
+        repo: string;
+        state: { definitionHash: string; environmentId: string };
+      }> = [];
+      const repoEnvironment: NonNullable<ReturnType<RunExecutionDb["getRepoEnvironment"]>> = {
+        currentRevisionId: 1,
+        definitionHash: "old-repo-hash",
+        environmentId: "env-old-repo",
+        packages,
+        repo: "owner/name",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      };
+      const harness = createHarness({
+        ensureEnvironment: (async () => {
+          throw new Error("default environment should not be ensured for repo override");
+        }) as RunExecutionDeps["ensureEnvironment"],
+        ensureEnvironmentForRepo: (async (_client, input) => {
+          harness.callLog.push("ensureEnvironmentForRepo");
+          ensureRepoInputs.push(structuredClone(input));
+
+          return {
+            created: scenario.created,
+            environmentId: scenario.environmentId,
+            hash: scenario.hash,
+            updated: scenario.updated,
+          };
+        }) as RunExecutionDeps["ensureEnvironmentForRepo"],
+      });
+      const db = harness.deps.db;
+      if (db === undefined) {
+        throw new Error("expected mock DB");
+      }
+      harness.deps.db = {
+        ...db,
+        getRepoEnvironment: (repo) => {
+          expect(repo).toBe("owner/name");
+          return repoEnvironment;
+        },
+        setDefaultEnvironmentState: () => {
+          throw new Error("default environment state should not be saved for repo override");
+        },
+        setRepoEnvironmentAnthropicState: (repo, state) => {
+          savedStates.push({ repo, state: structuredClone(state) });
+        },
+      };
+
+      const result = await runIssueOrchestration(
+        {
+          dryRun: false,
+          issue: 42,
+          repo: "owner/name",
+          runId: `run-repo-environment-${scenario.environmentId}`,
+        },
+        harness.deps,
+      );
+
+      expect(result.status).toBe("completed");
+      expect(harness.callLog).not.toContain("ensureEnvironment");
+      expect(harness.callLog).toContain("ensureEnvironmentForRepo");
+      expect(ensureRepoInputs).toEqual([
+        {
+          cached: { definitionHash: "old-repo-hash", environmentId: "env-old-repo" },
+          packages,
+          repo: "owner/name",
+        },
+      ]);
+      expect(savedStates).toEqual([
+        {
+          repo: "owner/name",
+          state: { definitionHash: scenario.hash, environmentId: scenario.environmentId },
+        },
+      ]);
+      expect(harness.fakeAnthropic.calls.creates[0]?.environment_id).toBe(scenario.environmentId);
+    }
   });
 
   test("repo context loading failure does not abort the run", async () => {
@@ -1096,6 +1313,67 @@ describe("runIssueOrchestration", () => {
       "user.interrupt",
     ]);
     expect(order.indexOf("send:user.interrupt") < order.lastIndexOf("status:failed")).toBe(true);
+  });
+
+  test("multi-repo idle completion without a final PR fails with final_pr_missing", async () => {
+    const githubAccess = {
+      authMode: "app",
+      authorizationToken: "test_multi_repo_token",
+      installationId: 12345,
+      octokit: { token: "test_multi_repo_token" },
+      permissions: {
+        contents: "write",
+        issues: "write",
+        pull_requests: "write",
+      },
+      repositorySelection: "selected",
+    };
+    const resolvedRepositorySets: Array<Array<{ owner: string; repo: string }>> = [];
+    const harness = createHarness({
+      githubAuth: {
+        resolveRepositoriesAccess: async (repositories: Array<{ owner: string; repo: string }>) => {
+          resolvedRepositorySets.push(structuredClone(repositories));
+          return githubAccess;
+        },
+        resolveRepositoryAccess: async () => githubAccess,
+      } as unknown as RunExecutionDeps["githubAuth"],
+      runSession: (async (_client, options) =>
+        buildSessionResult({ sessionId: options.sessionId })) as RunExecutionDeps["runSession"],
+    });
+
+    const result = await runIssueOrchestration(
+      {
+        dryRun: false,
+        issue: 42,
+        repo: "owner/name",
+        repositories: ["owner/api"],
+        runId: "run-multi-final-pr-missing",
+      },
+      harness.deps,
+    );
+
+    expect(resolvedRepositorySets).toEqual([
+      [
+        { owner: "owner", repo: "name" },
+        { owner: "owner", repo: "api" },
+      ],
+    ]);
+    expect(result).toEqual(
+      expect.objectContaining({
+        aborted: false,
+        errored: {
+          message: "Final PR URL was not recorded in run state",
+          type: "final_pr_missing",
+        },
+        runId: "run-multi-final-pr-missing",
+        status: "failed",
+        timedOut: false,
+      }),
+    );
+    expect(harness.db.statuses.at(-1)).toEqual({
+      runId: "run-multi-final-pr-missing",
+      status: "failed",
+    });
   });
 
   test("SQLite insertRun failures do not abort a successful run", async () => {

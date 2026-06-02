@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createRunQueueModule, type RunQueueModuleDeps } from "@/features/run-queue/handler";
+import {
+  createRunQueueModule,
+  type RunQueueModuleDeps,
+  RunTargetResolutionError,
+} from "@/features/run-queue/handler";
 import type { RunStartInput } from "@/features/run-queue/schemas";
 import { createDbModule } from "@/shared/persistence/db";
 import { createRunEventsModule } from "@/shared/run-events";
@@ -49,7 +53,7 @@ function createRunInput(issue: number, label: string): RunStartInput {
     configPath: label,
     dryRun: false,
     issue,
-    repo: `acme/${label}`,
+    repo: "acme/widgets",
   };
 }
 
@@ -75,6 +79,7 @@ function createHarness(executor: RunQueueModuleDeps["executor"]): {
   queue: RunQueueModule;
 } {
   const db = createDbModule(":memory:");
+  db.addRegisteredRepository("acme/widgets");
   openDbs.push(db);
   const runEvents = createRunEventsModule({ db });
   const queue = createRunQueueModule({ db, executor, runEvents });
@@ -218,6 +223,95 @@ describe("createRunQueueModule", () => {
     deferred.resolve();
 
     await waitFor(() => getDbStatus(db, run.runId) === "completed", "completed status in DB");
+  });
+
+  test("repo-only GitHub issue enqueue targets only the primary repo with multiple enabled repos", async () => {
+    const executorRepositories: string[][] = [];
+    const { db, queue } = createHarness(async (input) => {
+      executorRepositories.push(input.repositories ?? []);
+
+      return { aborted: false, runId: input.runId, status: "completed", timedOut: false };
+    });
+    db.addRegisteredRepository("acme/api");
+
+    const run = queue.enqueue(createRunInput(42, "primary-only"));
+    queue.start();
+
+    await waitFor(() => getDbStatus(db, run.runId) === "completed", "primary-only completion");
+
+    expect(executorRepositories).toEqual([["acme/widgets"]]);
+  });
+
+  test("explicit repositories enqueue keeps the primary and requested targets", async () => {
+    const executorRepositories: string[][] = [];
+    const { db, queue } = createHarness(async (input) => {
+      executorRepositories.push(input.repositories ?? []);
+
+      return { aborted: false, runId: input.runId, status: "completed", timedOut: false };
+    });
+    db.addRegisteredRepository("acme/api");
+
+    const run = queue.enqueue({
+      ...createRunInput(42, "explicit-targets"),
+      repositories: ["acme/api"],
+    });
+    queue.start();
+
+    await waitFor(() => getDbStatus(db, run.runId) === "completed", "explicit targets completion");
+
+    expect(executorRepositories).toEqual([["acme/widgets", "acme/api"]]);
+  });
+
+  test("Linear-origin enqueue requires an explicit primary repository", () => {
+    const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
+    db.addRegisteredRepository("acme/api");
+    openDbs.push(db);
+    const runEvents = createRunEventsModule({ db });
+    const queue = createRunQueueModule({
+      db,
+      executor: async (input) => ({
+        aborted: false,
+        runId: input.runId,
+        status: "completed",
+        timedOut: false,
+      }),
+      runEvents,
+    });
+
+    expect(() =>
+      queue.enqueue({
+        linearIssue: "ENG-123",
+        origin: "linear_issue",
+      } as RunStartInput),
+    ).toThrow(/repo|primary repository/i);
+    expect(db.listRuns({ limit: 10 })).toEqual([]);
+  });
+
+  test("target resolution failures throw RunTargetResolutionError before persistence", () => {
+    const { db, queue } = createHarness(async (input) => ({
+      aborted: false,
+      runId: input.runId,
+      status: "completed",
+      timedOut: false,
+    }));
+    let thrown: unknown;
+
+    try {
+      queue.enqueue({
+        dryRun: false,
+        issue: 42,
+        repo: "acme/api",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown instanceof Error ? thrown.message : "").toBe(
+      "Repository acme/api is not registered and enabled",
+    );
+    expect(thrown instanceof RunTargetResolutionError).toBe(true);
+    expect(db.listRuns({ limit: 10 })).toEqual([]);
   });
 
   test("successful executor emits one enriched complete payload with prUrl", async () => {
@@ -367,6 +461,14 @@ describe("createRunQueueModule", () => {
     let resyncCalls = 0;
     const db: RunQueueModuleDeps["db"] = {
       insertRun() {},
+      listRegisteredRepositories: () => [
+        {
+          addedAt: "2026-04-28T00:00:00.000Z",
+          enabled: true,
+          repo: "acme/widgets",
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        },
+      ],
       listRuns: () => [],
       resyncOrphanedRuns: () => {
         resyncCalls += 1;
@@ -583,6 +685,7 @@ describe("createRunQueueModule", () => {
     test("race: mismatched executor run id is logged but stored run completes", async () => {
       const warnings: unknown[] = [];
       const db = createDbModule(":memory:");
+      db.addRegisteredRepository("acme/widgets");
       openDbs.push(db);
       const runEvents = createRunEventsModule({ db });
       const queue = createRunQueueModule({

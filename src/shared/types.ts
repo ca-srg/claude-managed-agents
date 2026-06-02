@@ -54,11 +54,20 @@ export type DefaultEnvironmentState = {
   updatedAt: string;
 };
 
+export type RunRepositoryTarget = {
+  repo: string;
+  role: "primary" | "target";
+  baseBranch?: string;
+  branch?: string;
+  mountPath?: string;
+};
+
 export type RunState = {
   runId: string;
   issueNumber: number | null;
   origin?: RunOrigin;
   repo: string;
+  repositories?: RunRepositoryTarget[];
   branch: string;
   startedAt: string;
   subIssues: Array<{

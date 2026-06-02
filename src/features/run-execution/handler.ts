@@ -157,6 +157,13 @@ type RepoRef = {
   owner: string;
 };
 
+type RepositoryTarget = RepoRef & {
+  baseBranch: string;
+  mountPath: string;
+  repo: string;
+  role: "primary" | "target";
+};
+
 type ErrorResult = {
   message: string;
   type: string;
@@ -198,6 +205,22 @@ function parseRepoRef(repo: string): RepoRef {
   return { name, owner };
 }
 
+function uniqueRepositorySlugs(
+  primaryRepo: string,
+  repositories: readonly string[] | undefined,
+): string[] {
+  return Array.from(new Set([primaryRepo, ...(repositories ?? [])]));
+}
+
+function repositoryMountPath(ref: RepoRef, multiple: boolean): string {
+  if (!multiple) {
+    return `/workspace/${ref.name}`;
+  }
+
+  const segment = `${ref.owner}__${ref.name}`.replace(/[^A-Za-z0-9._-]+/g, "-");
+  return `/workspace/${segment}`;
+}
+
 function repositoryAuthorizationForPreflight(access: GitHubRepositoryAccess) {
   return {
     authMode: access.authMode,
@@ -213,6 +236,35 @@ async function resolveGitHubAccessFromDeps(
   repo: string,
 ): Promise<GitHubRepositoryAccess> {
   return deps.githubAuth.resolveRepositoryAccess(owner, repo);
+}
+
+async function resolveGitHubAccessForRepositories(
+  deps: RunExecutionDeps,
+  repositories: readonly RepoRef[],
+): Promise<GitHubRepositoryAccess> {
+  if (repositories.length === 0) {
+    throw new RunExecutionFailure("invalid_input", "at least one repository is required");
+  }
+
+  const first = repositories[0];
+  if (first === undefined) {
+    throw new RunExecutionFailure("invalid_input", "at least one repository is required");
+  }
+
+  if (repositories.length === 1) {
+    return resolveGitHubAccessFromDeps(deps, first.owner, first.name);
+  }
+
+  if (!deps.githubAuth.resolveRepositoriesAccess) {
+    throw new RunExecutionFailure(
+      "multi_repo_auth_unavailable",
+      "GitHub auth provider does not support multi-repository installation tokens",
+    );
+  }
+
+  return deps.githubAuth.resolveRepositoriesAccess(
+    repositories.map((repository) => ({ owner: repository.owner, repo: repository.name })),
+  );
 }
 
 function isBuiltinGitHubMcp(server: McpServer): boolean {
@@ -332,10 +384,14 @@ function assertBuiltinGitHubMcpEnabled(servers: ReadonlyArray<McpServer>): void 
 const GITHUB_APP_TOKEN_REFRESH_LEEWAY_MS = 10 * 60 * 1000;
 const GITHUB_APP_TOKEN_REFRESH_RETRY_MS = 60 * 1000;
 
-function findGitHubRepositoryResourceId(session: {
+function findGitHubRepositoryResourceIds(session: {
   resources?: Array<{ id: string; type: string }>;
-}): string | undefined {
-  return session.resources?.find((resource) => resource.type === "github_repository")?.id;
+}): string[] {
+  return (
+    session.resources
+      ?.filter((resource) => resource.type === "github_repository")
+      .map((resource) => resource.id) ?? []
+  );
 }
 
 function refreshDelayMs(access: GitHubRepositoryAccess): number | undefined {
@@ -355,9 +411,8 @@ function registerGitHubAppTokenRefresh(options: {
   getAccess: () => GitHubRepositoryAccess;
   logger: Logger;
   onAccessRefreshed: (access: GitHubRepositoryAccess) => void;
-  owner: string;
-  repo: string;
-  repoResourceId?: string;
+  repositories: readonly RepoRef[];
+  repoResourceIds: readonly string[];
   sessionId: string;
   updateMcpCredentialToken?: typeof updateMcpCredentialToken;
   vaultId: string;
@@ -381,23 +436,33 @@ function registerGitHubAppTokenRefresh(options: {
       }
 
       try {
-        const refreshed = await options.githubAuth?.refreshRepositoryAccess?.(
-          options.owner,
-          options.repo,
-        );
+        const refreshed =
+          options.repositories.length > 1
+            ? await options.githubAuth?.refreshRepositoriesAccess?.(
+                options.repositories.map((repository) => ({
+                  owner: repository.owner,
+                  repo: repository.name,
+                })),
+              )
+            : await options.githubAuth?.refreshRepositoryAccess?.(
+                options.repositories[0]?.owner ?? "",
+                options.repositories[0]?.name ?? "",
+              );
         if (!refreshed) {
           return;
         }
 
         options.onAccessRefreshed(refreshed);
         const updates: Promise<unknown>[] = [];
-        if (options.repoResourceId && options.anthropicClient.beta.sessions.resources?.update) {
-          updates.push(
-            options.anthropicClient.beta.sessions.resources.update(options.repoResourceId, {
-              authorization_token: refreshed.authorizationToken,
-              session_id: options.sessionId,
-            }),
-          );
+        if (options.anthropicClient.beta.sessions.resources?.update) {
+          for (const repoResourceId of options.repoResourceIds) {
+            updates.push(
+              options.anthropicClient.beta.sessions.resources.update(repoResourceId, {
+                authorization_token: refreshed.authorizationToken,
+                session_id: options.sessionId,
+              }),
+            );
+          }
         }
 
         if (options.updateMcpCredentialToken) {
@@ -416,7 +481,9 @@ function registerGitHubAppTokenRefresh(options: {
         options.logger.info(
           {
             credentialCount: options.credentialIds().length,
-            repo: `${options.owner}/${options.repo}`,
+            repositories: options.repositories.map(
+              (repository) => `${repository.owner}/${repository.name}`,
+            ),
             sessionId: options.sessionId,
           },
           "Refreshed GitHub App installation token for running session",
@@ -424,7 +491,13 @@ function registerGitHubAppTokenRefresh(options: {
         schedule(refreshDelayMs(refreshed));
       } catch (error) {
         options.logger.warn(
-          { err: error, repo: `${options.owner}/${options.repo}`, sessionId: options.sessionId },
+          {
+            err: error,
+            repositories: options.repositories.map(
+              (repository) => `${repository.owner}/${repository.name}`,
+            ),
+            sessionId: options.sessionId,
+          },
           "Failed to refresh GitHub App installation token; will retry",
         );
         schedule(GITHUB_APP_TOKEN_REFRESH_RETRY_MS);
@@ -439,24 +512,6 @@ function registerGitHubAppTokenRefresh(options: {
       clearTimeout(timer);
     }
   };
-}
-
-function readRepoPromptBody(
-  db: RunExecutionDb,
-  repo: string,
-  agent: "parent" | "child",
-  logger: Logger,
-): string | null {
-  try {
-    const row = db.getRepoPrompt(repo, agent);
-    if (row && typeof row.body === "string" && row.body.trim().length > 0) {
-      return row.body;
-    }
-  } catch (err) {
-    logger.warn({ agent, err, repo }, "failed to load repo prompt; falling back to global only");
-  }
-
-  return null;
 }
 
 function resolveBaseBranch(
@@ -829,10 +884,15 @@ export async function runIssueOrchestration(
       typeof configuredVaultIdCandidate === "string" && configuredVaultIdCandidate.length > 0
         ? configuredVaultIdCandidate
         : undefined;
-    const { name: repoName, owner } = parseRepoRef(input.repo);
-    const repoSlug = `${owner}/${repoName}`;
+    const primaryRepoRef = parseRepoRef(input.repo);
+    const { name: repoName, owner } = primaryRepoRef;
+    const repoSlug = `${primaryRepoRef.owner}/${primaryRepoRef.name}`;
+    const repositoryRefs = uniqueRepositorySlugs(repoSlug, input.repositories).map((repo) => ({
+      ...parseRepoRef(repo),
+      repo,
+    }));
     let origin = runOriginFromExecutionInput(input, repoSlug);
-    let githubAccess = await resolveGitHubAccessFromDeps(deps, owner, repoName);
+    let githubAccess = await resolveGitHubAccessForRepositories(deps, repositoryRefs);
     let octokit = githubAccess.octokit;
 
     if (input.dryRun) {
@@ -914,16 +974,21 @@ export async function runIssueOrchestration(
     }
 
     notifyPhase("preflight");
-    let preflight: Awaited<ReturnType<typeof runPreflight>>;
+    const repositoryPreflights = new Map<string, Awaited<ReturnType<typeof runPreflight>>>();
     try {
-      preflight = await deps.runPreflight({
-        anthropicClient,
-        githubAuth: repositoryAuthorizationForPreflight(githubAccess),
-        ...(input.origin === "github_issue" ? { issueN: input.issue } : {}),
-        octokit,
-        owner,
-        repo: repoName,
-      });
+      for (const repository of repositoryRefs) {
+        const preflightResult = await deps.runPreflight({
+          ...(repository.repo === repoSlug ? { anthropicClient } : { skipAnthropicCheck: true }),
+          githubAuth: repositoryAuthorizationForPreflight(githubAccess),
+          ...(input.origin === "github_issue" && repository.repo === repoSlug
+            ? { issueN: input.issue }
+            : {}),
+          octokit,
+          owner: repository.owner,
+          repo: repository.name,
+        });
+        repositoryPreflights.set(repository.repo, preflightResult);
+      }
     } catch (error) {
       throw new RunExecutionFailure("preflight_failed", errorMessageFromUnknown(error));
     }
@@ -956,29 +1021,47 @@ export async function runIssueOrchestration(
         );
       }
     }
-    const baseBranch = resolveBaseBranch(cfg.pr.base, preflight.github.defaultBranch);
+    const repositoryTargets: RepositoryTarget[] = repositoryRefs.map((repository) => {
+      const preflight = repositoryPreflights.get(repository.repo);
+      if (preflight === undefined) {
+        throw new RunExecutionFailure(
+          "preflight_failed",
+          `missing preflight for ${repository.repo}`,
+        );
+      }
+
+      return {
+        ...repository,
+        baseBranch: resolveBaseBranch(cfg.pr.base, preflight.github.defaultBranch),
+        mountPath: repositoryMountPath(repository, repositoryRefs.length > 1),
+        role: repository.repo === repoSlug ? "primary" : "target",
+      };
+    });
+    const baseBranch = repositoryTargets[0]?.baseBranch;
+    if (baseBranch === undefined) {
+      throw new RunExecutionFailure("invalid_input", "at least one repository is required");
+    }
     throwIfAborted(sessionController.signal);
 
     notifyPhase("environment");
-    const repoEnvRow = db.getRepoEnvironment(repoSlug);
+    const repoEnvironment = repositoryTargets.length === 1 ? db.getRepoEnvironment(repoSlug) : null;
     let environmentId: string;
-
-    if (repoEnvRow) {
-      const ensureRepoOutcome = await deps.ensureEnvironmentForRepo(anthropicClient, {
+    if (repoEnvironment) {
+      const ensureOutcome = await deps.ensureEnvironmentForRepo(anthropicClient, {
         cached: {
-          definitionHash: repoEnvRow.definitionHash,
-          environmentId: repoEnvRow.environmentId,
+          definitionHash: repoEnvironment.definitionHash,
+          environmentId: repoEnvironment.environmentId,
         },
-        packages: repoEnvRow.packages,
-        repo: repoSlug,
+        packages: repoEnvironment.packages,
+        repo: repoEnvironment.repo,
       });
-      if (ensureRepoOutcome.created || ensureRepoOutcome.updated) {
-        db.setRepoEnvironmentAnthropicState(repoSlug, {
-          definitionHash: ensureRepoOutcome.hash,
-          environmentId: ensureRepoOutcome.environmentId,
+      environmentId = ensureOutcome.environmentId;
+      if (ensureOutcome.created || ensureOutcome.updated) {
+        db.setRepoEnvironmentAnthropicState(repoEnvironment.repo, {
+          definitionHash: ensureOutcome.hash,
+          environmentId: ensureOutcome.environmentId,
         });
       }
-      environmentId = ensureRepoOutcome.environmentId;
     } else {
       const ensureOutcome = await deps.ensureEnvironment(
         anthropicClient,
@@ -1045,6 +1128,13 @@ export async function runIssueOrchestration(
       issueNumber: origin.type === "github_issue" ? origin.issueNumber : null,
       origin,
       repo: `${owner}/${repoName}`,
+      repositories: repositoryTargets.map((repository) => ({
+        baseBranch: repository.baseBranch,
+        branch: `agent/${originBranchSegment(origin)}/${slug(provisionalBranchTitle)}`,
+        mountPath: repository.mountPath,
+        repo: repository.repo,
+        role: repository.role,
+      })),
       runId: fallbackRunId,
       sessionIds: [],
       startedAt: new Date().toISOString(),
@@ -1093,21 +1183,46 @@ export async function runIssueOrchestration(
     try {
       const loadRepoContext = deps.loadRepoContext ?? defaultLoadRepoContext;
       const formatRepoContext = deps.formatRepoContext ?? defaultFormatRepoContext;
-      const loadedRepoContext = await loadRepoContext(octokit, owner, repoName, baseBranch, logger);
-      repoContext = formatRepoContext(loadedRepoContext, baseBranch);
+      const contexts: string[] = [];
+      for (const repository of repositoryTargets) {
+        const loadedRepoContext = await loadRepoContext(
+          octokit,
+          repository.owner,
+          repository.name,
+          repository.baseBranch,
+          logger,
+        );
+        const formatted = formatRepoContext(loadedRepoContext, repository.baseBranch);
+        if (formatted !== null) {
+          contexts.push(`## Context for ${repository.repo}\n\n${formatted}`);
+        }
+      }
+      repoContext = contexts.length === 0 ? null : contexts.join("\n\n");
     } catch (error) {
       logger.warn(
-        { baseBranch, err: error, repo: repoSlug },
+        { err: error, repositories: repositoryTargets.map((repository) => repository.repo) },
         "failed to load repository context; continuing without repository context",
       );
     }
     throwIfAborted(sessionController.signal);
+    const parentRepoPrompts = repositoryTargets.map((repository) => ({
+      repoName: repository.name,
+      repoOwner: repository.owner,
+      repoPrompt: db.getRepoPrompt(repository.repo, "parent")?.body ?? null,
+    }));
 
     runState = {
       ...(runState as RunState),
       branch,
       issueNumber: origin.type === "github_issue" ? origin.issueNumber : null,
       origin,
+      repositories: repositoryTargets.map((repository) => ({
+        baseBranch: repository.baseBranch,
+        branch,
+        mountPath: repository.mountPath,
+        repo: repository.repo,
+        role: repository.role,
+      })),
     };
 
     safeSetRunStatus("running");
@@ -1117,22 +1232,17 @@ export async function runIssueOrchestration(
     const parentSession = await anthropicClient.beta.sessions.create({
       agent: agents.parentAgentId,
       environment_id: environmentId,
-      resources: [
-        {
-          authorization_token: githubAccess.authorizationToken,
-          // Check out the base branch, NOT the agent work branch. The work
-          // branch does not exist on the remote yet at session-start time; the
-          // parent/child agents create it inside the session via
-          // `git checkout -B ${branch} origin/${branch} || ... origin/${baseBranch}`.
-          // Pointing the initial checkout at the (not-yet-pushed) work branch
-          // races branch creation and fails with "branch or commit not found".
-          // The base branch always exists, so this avoids the race entirely.
-          checkout: { name: baseBranch, type: "branch" },
-          mount_path: `/workspace/${repoName}`,
-          type: "github_repository",
-          url: `https://github.com/${owner}/${repoName}`,
-        },
-      ],
+      resources: repositoryTargets.map((repository) => ({
+        authorization_token: githubAccess.authorizationToken,
+        // Check out the base branch, NOT the agent work branch. The work
+        // branch does not exist on the remote yet at session-start time; the
+        // parent/child agents create it inside the session via checkout-first
+        // instructions. The base branch always exists, so this avoids races.
+        checkout: { name: repository.baseBranch, type: "branch" as const },
+        mount_path: repository.mountPath,
+        type: "github_repository" as const,
+        url: `https://github.com/${repository.owner}/${repository.name}`,
+      })),
       vault_ids: [vault.vaultId],
     });
     parentSessionId = parentSession.id;
@@ -1157,15 +1267,12 @@ export async function runIssueOrchestration(
         githubAccess = access;
         octokit = access.octokit;
       },
-      owner,
-      repo: repoName,
-      repoResourceId: findGitHubRepositoryResourceId(parentSession),
+      repositories: repositoryRefs,
+      repoResourceIds: findGitHubRepositoryResourceIds(parentSession),
       sessionId: parentSession.id,
       updateMcpCredentialToken: deps.updateMcpCredentialToken,
       vaultId: vault.vaultId,
     });
-
-    const repoParentPromptBody = readRepoPromptBody(db, repoSlug, "parent", logger);
 
     const parentPromptText = deps.buildParentPrompt({
       baseBranch,
@@ -1175,10 +1282,17 @@ export async function runIssueOrchestration(
       maxSubIssues: cfg.maxSubIssues,
       origin,
       parentIssueNumber: origin.type === "github_issue" ? origin.issueNumber : undefined,
+      repositories: repositoryTargets.map((repository) => ({
+        baseBranch: repository.baseBranch,
+        mountPath: repository.mountPath,
+        repoName: repository.name,
+        repoOwner: repository.owner,
+        role: repository.role,
+      })),
       repoContext,
       repoName,
       repoOwner: owner,
-      repoPrompt: repoParentPromptBody,
+      repoPrompts: parentRepoPrompts,
     });
 
     await anthropicClient.beta.sessions.events.send(parentSession.id, {

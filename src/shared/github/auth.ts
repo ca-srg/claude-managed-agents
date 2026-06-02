@@ -31,7 +31,13 @@ export type GitHubRepositoryAccess = GitHubRepositoryAuthorization & {
 
 export type GitHubAuthProvider = {
   resolveRepositoryAccess(owner: string, repo: string): Promise<GitHubRepositoryAccess>;
+  resolveRepositoriesAccess?(
+    repositories: Array<{ owner: string; repo: string }>,
+  ): Promise<GitHubRepositoryAccess>;
   refreshRepositoryAccess?(owner: string, repo: string): Promise<GitHubRepositoryAccess>;
+  refreshRepositoriesAccess?(
+    repositories: Array<{ owner: string; repo: string }>,
+  ): Promise<GitHubRepositoryAccess>;
 };
 
 type CreateGitHubAuthProviderOptions = {
@@ -61,6 +67,17 @@ function isFresh(auth: InstallationAccessTokenAuthentication): boolean {
 
 function tokenCacheKey(installationId: number, repo: string): string {
   return `${installationId}:${repo.toLowerCase()}`;
+}
+
+function multiRepositoryTokenCacheKey(
+  installationId: number,
+  repositories: Array<{ owner: string; repo: string }>,
+): string {
+  const repoKey = repositories
+    .map((repository) => `${repository.owner}/${repository.repo}`.toLowerCase())
+    .sort()
+    .join(",");
+  return `${installationId}:multi:${repoKey}`;
 }
 
 function toRepositoryAccess(
@@ -109,6 +126,18 @@ class AppGitHubAuthProvider implements GitHubAuthProvider {
     return this.resolveRepositoryAccessInternal(owner, repo, true);
   }
 
+  async resolveRepositoriesAccess(
+    repositories: Array<{ owner: string; repo: string }>,
+  ): Promise<GitHubRepositoryAccess> {
+    return this.resolveRepositoriesAccessInternal(repositories, false);
+  }
+
+  async refreshRepositoriesAccess(
+    repositories: Array<{ owner: string; repo: string }>,
+  ): Promise<GitHubRepositoryAccess> {
+    return this.resolveRepositoriesAccessInternal(repositories, true);
+  }
+
   private async resolveRepositoryAccessInternal(
     owner: string,
     repo: string,
@@ -130,6 +159,61 @@ class AppGitHubAuthProvider implements GitHubAuthProvider {
     const installationAuth = await auth({
       installationId,
       repositoryNames: [repo],
+      refresh,
+      type: "installation",
+    });
+    const octokit = createGitHubClient(installationAuth.token, { logger: this.opts.logger });
+    this.cache.set(cacheKey, { auth: installationAuth, octokit });
+    return toRepositoryAccess(installationAuth, octokit);
+  }
+
+  private async resolveRepositoriesAccessInternal(
+    repositories: Array<{ owner: string; repo: string }>,
+    refresh: boolean,
+  ): Promise<GitHubRepositoryAccess> {
+    if (repositories.length === 0) {
+      throw new Error("At least one GitHub repository is required");
+    }
+
+    const uniqueRepositories = Array.from(
+      new Map(
+        repositories.map((repository) => [
+          `${repository.owner.toLowerCase()}/${repository.repo.toLowerCase()}`,
+          repository,
+        ]),
+      ).values(),
+    );
+    const installationIds = await Promise.all(
+      uniqueRepositories.map(
+        (repository) =>
+          this.config.installationId ??
+          this.resolveInstallationId(repository.owner, repository.repo),
+      ),
+    );
+    const installationId = installationIds[0];
+    if (installationId === undefined) {
+      throw new Error("GitHub App installation could not be resolved");
+    }
+    if (installationIds.some((candidate) => candidate !== installationId)) {
+      throw new Error(
+        "Registered repositories span multiple GitHub App installations; multi-repository runs require one installation",
+      );
+    }
+
+    const cacheKey = multiRepositoryTokenCacheKey(installationId, uniqueRepositories);
+    const cached = this.cache.get(cacheKey);
+    if (!refresh && cached && isFresh(cached.auth)) {
+      return toRepositoryAccess(cached.auth, cached.octokit);
+    }
+
+    const auth = createAppAuth({
+      appId: this.config.appId,
+      installationId,
+      privateKey: this.config.privateKey,
+    });
+    const installationAuth = await auth({
+      installationId,
+      repositoryNames: uniqueRepositories.map((repository) => repository.repo),
       refresh,
       type: "installation",
     });

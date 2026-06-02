@@ -9,11 +9,15 @@ import type { Logger } from "pino";
 
 import type { RunDetailOutput, RunSummaryOutput } from "@/features/run-api/schemas";
 import { createRunApiRoutes, type RunApiDeps } from "@/features/run-api/server";
-import { createRunQueueModule, type RunQueueModuleDeps } from "@/features/run-queue/handler";
+import {
+  createRunQueueModule,
+  type RunQueueModuleDeps,
+  RunTargetResolutionError,
+} from "@/features/run-queue/handler";
 import { createDbModule } from "@/shared/persistence/db";
 import { createRunEventsModule } from "@/shared/run-events";
 import type { SessionClient, SessionResult } from "@/shared/session";
-import type { RunEvent, RunPhase, RunStatus, RunSummary } from "@/shared/types";
+import type { RunEvent, RunPhase, RunState, RunStatus, RunSummary } from "@/shared/types";
 
 type DbModule = ReturnType<typeof createDbModule>;
 type EnqueueInput = Parameters<RunApiDeps["runQueue"]["enqueue"]>[0];
@@ -29,7 +33,12 @@ type SubIssueSeed = { issueId: number; issueNumber: number; taskId: string };
 type ParsedSseMessage = { data?: unknown; event?: string; id?: string };
 
 const openDbs: DbModule[] = [];
-const silentLogger = {} as Logger;
+const silentLogger = {
+  debug() {},
+  error() {},
+  info() {},
+  warn() {},
+} as unknown as Logger;
 
 function createEmptySessionUsage(): SessionResult["usage"] {
   return {
@@ -85,15 +94,19 @@ function createRunSummary(runId: string, status: RunStatus): RunSummary {
   };
 }
 
-function createFakeHarness(opts: { cancelResult?: boolean; runs?: RunSummary[] } = {}): {
+function createFakeHarness(
+  opts: { cancelResult?: boolean; enqueueError?: unknown; runs?: RunSummary[] } = {},
+): {
   app: ReturnType<typeof createRunApiRoutes>;
   canceledRunIds: string[];
   emittedEvents: Array<Parameters<RunApiDeps["runEvents"]["emit"]>>;
   enqueuedInputs: EnqueueInput[];
+  errorLogs: unknown[];
 } {
   const canceledRunIds: string[] = [];
   const enqueuedInputs: EnqueueInput[] = [];
   const emittedEvents: Array<Parameters<RunApiDeps["runEvents"]["emit"]>> = [];
+  const errorLogs: unknown[] = [];
   const deps: RunApiDeps = {
     db: {
       getRunById: () => null,
@@ -110,7 +123,12 @@ function createFakeHarness(opts: { cancelResult?: boolean; runs?: RunSummary[] }
         return runs.slice(0, query.limit ?? runs.length);
       },
     },
-    logger: silentLogger,
+    logger: {
+      ...silentLogger,
+      error(fields: unknown) {
+        errorLogs.push(fields);
+      },
+    } as Logger,
     runEvents: {
       emit(runId, event) {
         emittedEvents.push([runId, event]);
@@ -146,6 +164,10 @@ function createFakeHarness(opts: { cancelResult?: boolean; runs?: RunSummary[] }
         return opts.cancelResult ?? false;
       },
       enqueue(input) {
+        if (opts.enqueueError !== undefined) {
+          throw opts.enqueueError;
+        }
+
         enqueuedInputs.push(input);
         return { position: enqueuedInputs.length, runId: `run-${enqueuedInputs.length}` };
       },
@@ -155,7 +177,13 @@ function createFakeHarness(opts: { cancelResult?: boolean; runs?: RunSummary[] }
     },
   };
 
-  return { app: createRunApiRoutes(deps), canceledRunIds, emittedEvents, enqueuedInputs };
+  return {
+    app: createRunApiRoutes(deps),
+    canceledRunIds,
+    emittedEvents,
+    enqueuedInputs,
+    errorLogs,
+  };
 }
 
 async function postJson(
@@ -197,6 +225,7 @@ function setupTestDb(
   runQueue: ReturnType<typeof createRunQueueModule>;
 } {
   const db = createDbModule(":memory:");
+  db.addRegisteredRepository("acme/widgets");
   openDbs.push(db);
   const runEvents = createRunEventsModule({ db });
   const runQueue = createRunQueueModule({
@@ -235,6 +264,7 @@ function seedRun(
     phase?: RunPhase;
     prUrl?: string;
     repo?: string;
+    repositories?: RunState["repositories"];
     runId: string;
     sessionIds?: string[];
     startedAt?: string;
@@ -246,6 +276,7 @@ function seedRun(
     branch: input.branch ?? `branch-${input.runId}`,
     issueNumber: input.issueNumber ?? 42,
     repo: input.repo ?? "acme/widgets",
+    ...(input.repositories === undefined ? {} : { repositories: input.repositories }),
     runId: input.runId,
     // sessionIds は別テーブル (sessions) で管理されるため insertRun の入力としては
     // 空にしておき、後段で insertSession 経由で seed する。
@@ -520,6 +551,35 @@ describe("createRunApiRoutes", () => {
     expect(payload.runs.map((run) => run.runId).sort()).toEqual(["run-1", "run-2", "run-3"]);
   });
 
+  test("GET /api/runs returns resolved repositories for multi-repo runs", async () => {
+    const { app, db } = setupTestDb();
+    const repositories: NonNullable<RunState["repositories"]> = [
+      {
+        baseBranch: "main",
+        branch: "agent/issue-42/fix-api",
+        mountPath: "/workspace/acme__widgets",
+        repo: "acme/widgets",
+        role: "primary",
+      },
+      {
+        baseBranch: "main",
+        branch: "agent/issue-42/fix-api",
+        mountPath: "/workspace/acme__api",
+        repo: "acme/api",
+        role: "target",
+      },
+    ];
+    seedRun(db, { repositories, runId: "multi-repo-run" });
+
+    const response = await app.request("/api/runs");
+    const payload = (await response.json()) as RunSummaryOutput;
+
+    expect(response.status).toBe(200);
+    expect(payload.runs.find((run) => run.runId === "multi-repo-run")?.repositories).toEqual(
+      repositories,
+    );
+  });
+
   test("GET /api/runs?status=running filters by status", async () => {
     const { app, db } = setupTestDb();
     seedRun(db, { runId: "queued-run", status: "queued" });
@@ -639,6 +699,33 @@ describe("createRunApiRoutes", () => {
       { issueId: 102, issueNumber: 12, taskId: "task-b" },
     ]);
     expect(payload.events).toBeUndefined();
+  });
+
+  test("GET /api/runs/:runId returns resolved repositories for multi-repo runs", async () => {
+    const { app, db } = setupTestDb();
+    const repositories: NonNullable<RunState["repositories"]> = [
+      {
+        baseBranch: "main",
+        branch: "agent/issue-42/fix-api",
+        mountPath: "/workspace/acme__widgets",
+        repo: "acme/widgets",
+        role: "primary",
+      },
+      {
+        baseBranch: "main",
+        branch: "agent/issue-42/fix-api",
+        mountPath: "/workspace/acme__api",
+        repo: "acme/api",
+        role: "target",
+      },
+    ];
+    seedRun(db, { repositories, runId: "multi-repo-detail" });
+
+    const response = await app.request("/api/runs/multi-repo-detail");
+    const payload = (await response.json()) as RunDetailOutput;
+
+    expect(response.status).toBe(200);
+    expect(payload.repositories).toEqual(repositories);
   });
 
   test("GET /api/runs/:runId returns 404 for unknown runId", async () => {
@@ -954,6 +1041,7 @@ describe("createRunApiRoutes", () => {
   test("GET /api/runs/:runId/events handles session stream error paths", async () => {
     const warnCalls: Array<{ fields: unknown; message: string }> = [];
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const runQueue = createRunQueueModule({
@@ -1154,6 +1242,54 @@ describe("createRunApiRoutes", () => {
     expect(emittedEvents).toEqual([]);
   });
 
+  test("POST /api/runs rejects conflicting issue URL and explicit repo before enqueueing", async () => {
+    const { app, enqueuedInputs } = createFakeHarness();
+    const payload = await expectSchemaError(app, {
+      issue: "https://github.com/acme/widgets/issues/42",
+      repo: "acme/api",
+    });
+
+    expect(payload.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
+    expect(enqueuedInputs).toEqual([]);
+  });
+
+  test("POST /api/runs maps run target resolution failures to 400", async () => {
+    const { app, enqueuedInputs } = createFakeHarness({
+      enqueueError: new RunTargetResolutionError(
+        "Repository acme/api is not registered and enabled",
+      ),
+    });
+
+    const response = await postJson(app, { issue: 42, repo: "acme/widgets" });
+    const payload = (await response.json()) as StopErrorResponse;
+
+    expect(response.status).toBe(400);
+    expect(payload.error).toEqual({
+      message: "Repository acme/api is not registered and enabled",
+      type: "run_target_resolution",
+    });
+    expect(enqueuedInputs).toEqual([]);
+  });
+
+  test("POST /api/runs maps enqueue persistence failures to 500", async () => {
+    const { app, enqueuedInputs, errorLogs } = createFakeHarness({
+      enqueueError: new Error("database is locked"),
+    });
+
+    const response = await postJson(app, { issue: 42, repo: "acme/widgets" });
+    const payload = (await response.json()) as StopErrorResponse;
+
+    expect(response.status).toBe(500);
+    expect(payload.error).toEqual({
+      message: "failed to enqueue run",
+      type: "server_error",
+    });
+    expect(payload.error.type).not.toBe("run_target_resolution");
+    expect(errorLogs).toHaveLength(1);
+    expect((errorLogs[0] as { err?: unknown }).err instanceof Error).toBe(true);
+    expect(enqueuedInputs).toEqual([]);
+  });
+
   test("POST /api/runs rejects blank Linear issue identifiers before enqueueing", async () => {
     const { app, enqueuedInputs } = createFakeHarness();
     const payload = await expectSchemaError(app, {
@@ -1166,6 +1302,17 @@ describe("createRunApiRoutes", () => {
     expect(enqueuedInputs).toEqual([]);
   });
 
+  test("POST /api/runs rejects Linear issue payloads without a repo before enqueueing", async () => {
+    const { app, enqueuedInputs } = createFakeHarness();
+    const payload = await expectSchemaError(app, {
+      linearIssue: "ENG-123",
+      origin: "linear_issue",
+    });
+
+    expect(payload.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
+    expect(enqueuedInputs).toEqual([]);
+  });
+
   test("POST /api/runs rejects bodies missing issue", async () => {
     const { app, enqueuedInputs } = createFakeHarness();
     const payload = await expectSchemaError(app, { repo: "acme/widgets" });
@@ -1174,12 +1321,14 @@ describe("createRunApiRoutes", () => {
     expect(enqueuedInputs).toEqual([]);
   });
 
-  test("POST /api/runs rejects missing repo field with schema error", async () => {
+  test("POST /api/runs accepts missing repo field for registered-repository resolution", async () => {
     const { app, enqueuedInputs } = createFakeHarness();
-    const payload = await expectSchemaError(app, { issue: 42 });
+    const response = await postJson(app, { issue: 42 });
+    const payload = (await response.json()) as QueueResponse;
 
-    expect(payload.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
-    expect(enqueuedInputs).toEqual([]);
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ position: 1, runId: "run-1", status: "queued" });
+    expect(enqueuedInputs).toEqual([{ dryRun: false, issue: 42, origin: "github_issue" }]);
   });
 
   test("POST /api/runs rejects malformed JSON error body without enqueueing", async () => {
@@ -1287,6 +1436,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs/:runId/stop cancels a queued run and removes it from the queue", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const executorRunIds: string[] = [];
@@ -1323,6 +1473,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs/:runId/stop cancels a running run and marks it aborted", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     let executorStarted = false;
@@ -1433,6 +1584,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs preserves FIFO serialization through runQueue", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const executionOrder: number[] = [];
