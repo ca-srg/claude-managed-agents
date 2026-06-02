@@ -1044,16 +1044,36 @@ export async function runIssueOrchestration(
     throwIfAborted(sessionController.signal);
 
     notifyPhase("environment");
-    const ensureOutcome = await deps.ensureEnvironment(
-      anthropicClient,
-      db.getDefaultEnvironmentState(),
-    );
-    const environmentId = ensureOutcome.environmentId;
-    if (ensureOutcome.created) {
-      db.setDefaultEnvironmentState({
-        definitionHash: ensureOutcome.hash,
-        environmentId: ensureOutcome.environmentId,
+    const repoEnvironment = repositoryTargets.length === 1 ? db.getRepoEnvironment(repoSlug) : null;
+    let environmentId: string;
+    if (repoEnvironment) {
+      const ensureOutcome = await deps.ensureEnvironmentForRepo(anthropicClient, {
+        cached: {
+          definitionHash: repoEnvironment.definitionHash,
+          environmentId: repoEnvironment.environmentId,
+        },
+        packages: repoEnvironment.packages,
+        repo: repoEnvironment.repo,
       });
+      environmentId = ensureOutcome.environmentId;
+      if (ensureOutcome.created || ensureOutcome.updated) {
+        db.setRepoEnvironmentAnthropicState(repoEnvironment.repo, {
+          definitionHash: ensureOutcome.hash,
+          environmentId: ensureOutcome.environmentId,
+        });
+      }
+    } else {
+      const ensureOutcome = await deps.ensureEnvironment(
+        anthropicClient,
+        db.getDefaultEnvironmentState(),
+      );
+      environmentId = ensureOutcome.environmentId;
+      if (ensureOutcome.created) {
+        db.setDefaultEnvironmentState({
+          definitionHash: ensureOutcome.hash,
+          environmentId: ensureOutcome.environmentId,
+        });
+      }
     }
     await deps.seedAgentPrompts({ db, logger });
     const prompts = await deps.loadAgentPrompts({ db, logger });
@@ -1444,7 +1464,7 @@ export async function runIssueOrchestration(
       throw new RunExecutionFailure("timeout", "Session timed out before completion");
     }
 
-    if (!runState.prUrl && repositoryTargets.length === 1) {
+    if (!runState.prUrl) {
       throw new RunExecutionFailure(
         "final_pr_missing",
         "Final PR URL was not recorded in run state",

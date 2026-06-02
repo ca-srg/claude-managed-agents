@@ -674,6 +674,109 @@ describe("runIssueOrchestration", () => {
     expect(resource.checkout).toEqual({ name: "main", type: "branch" });
   });
 
+  test("single-repo run uses repo-specific environment packages and persists Anthropic state", async () => {
+    const packages = {
+      apt: ["libpq-dev"],
+      cargo: [],
+      gem: [],
+      go: [],
+      npm: ["tsx"],
+      pip: ["pytest"],
+    };
+    const scenarios = [
+      {
+        created: true,
+        environmentId: "env-repo-created",
+        hash: "repo-hash-created",
+        updated: false,
+      },
+      {
+        created: false,
+        environmentId: "env-repo-updated",
+        hash: "repo-hash-updated",
+        updated: true,
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const ensureRepoInputs: Array<Parameters<RunExecutionDeps["ensureEnvironmentForRepo"]>[1]> =
+        [];
+      const savedStates: Array<{
+        repo: string;
+        state: { definitionHash: string; environmentId: string };
+      }> = [];
+      const repoEnvironment: NonNullable<ReturnType<RunExecutionDb["getRepoEnvironment"]>> = {
+        currentRevisionId: 1,
+        definitionHash: "old-repo-hash",
+        environmentId: "env-old-repo",
+        packages,
+        repo: "owner/name",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      };
+      const harness = createHarness({
+        ensureEnvironment: (async () => {
+          throw new Error("default environment should not be ensured for repo override");
+        }) as RunExecutionDeps["ensureEnvironment"],
+        ensureEnvironmentForRepo: (async (_client, input) => {
+          harness.callLog.push("ensureEnvironmentForRepo");
+          ensureRepoInputs.push(structuredClone(input));
+
+          return {
+            created: scenario.created,
+            environmentId: scenario.environmentId,
+            hash: scenario.hash,
+            updated: scenario.updated,
+          };
+        }) as RunExecutionDeps["ensureEnvironmentForRepo"],
+      });
+      const db = harness.deps.db;
+      if (db === undefined) {
+        throw new Error("expected mock DB");
+      }
+      harness.deps.db = {
+        ...db,
+        getRepoEnvironment: (repo) => {
+          expect(repo).toBe("owner/name");
+          return repoEnvironment;
+        },
+        setDefaultEnvironmentState: () => {
+          throw new Error("default environment state should not be saved for repo override");
+        },
+        setRepoEnvironmentAnthropicState: (repo, state) => {
+          savedStates.push({ repo, state: structuredClone(state) });
+        },
+      };
+
+      const result = await runIssueOrchestration(
+        {
+          dryRun: false,
+          issue: 42,
+          repo: "owner/name",
+          runId: `run-repo-environment-${scenario.environmentId}`,
+        },
+        harness.deps,
+      );
+
+      expect(result.status).toBe("completed");
+      expect(harness.callLog).not.toContain("ensureEnvironment");
+      expect(harness.callLog).toContain("ensureEnvironmentForRepo");
+      expect(ensureRepoInputs).toEqual([
+        {
+          cached: { definitionHash: "old-repo-hash", environmentId: "env-old-repo" },
+          packages,
+          repo: "owner/name",
+        },
+      ]);
+      expect(savedStates).toEqual([
+        {
+          repo: "owner/name",
+          state: { definitionHash: scenario.hash, environmentId: scenario.environmentId },
+        },
+      ]);
+      expect(harness.fakeAnthropic.calls.creates[0]?.environment_id).toBe(scenario.environmentId);
+    }
+  });
+
   test("repo context loading failure does not abort the run", async () => {
     let loadCalls = 0;
     const harness = createHarness({
@@ -1139,6 +1242,67 @@ describe("runIssueOrchestration", () => {
       "user.interrupt",
     ]);
     expect(order.indexOf("send:user.interrupt") < order.lastIndexOf("status:failed")).toBe(true);
+  });
+
+  test("multi-repo idle completion without a final PR fails with final_pr_missing", async () => {
+    const githubAccess = {
+      authMode: "app",
+      authorizationToken: "test_multi_repo_token",
+      installationId: 12345,
+      octokit: { token: "test_multi_repo_token" },
+      permissions: {
+        contents: "write",
+        issues: "write",
+        pull_requests: "write",
+      },
+      repositorySelection: "selected",
+    };
+    const resolvedRepositorySets: Array<Array<{ owner: string; repo: string }>> = [];
+    const harness = createHarness({
+      githubAuth: {
+        resolveRepositoriesAccess: async (repositories: Array<{ owner: string; repo: string }>) => {
+          resolvedRepositorySets.push(structuredClone(repositories));
+          return githubAccess;
+        },
+        resolveRepositoryAccess: async () => githubAccess,
+      } as unknown as RunExecutionDeps["githubAuth"],
+      runSession: (async (_client, options) =>
+        buildSessionResult({ sessionId: options.sessionId })) as RunExecutionDeps["runSession"],
+    });
+
+    const result = await runIssueOrchestration(
+      {
+        dryRun: false,
+        issue: 42,
+        repo: "owner/name",
+        repositories: ["owner/api"],
+        runId: "run-multi-final-pr-missing",
+      },
+      harness.deps,
+    );
+
+    expect(resolvedRepositorySets).toEqual([
+      [
+        { owner: "owner", repo: "name" },
+        { owner: "owner", repo: "api" },
+      ],
+    ]);
+    expect(result).toEqual(
+      expect.objectContaining({
+        aborted: false,
+        errored: {
+          message: "Final PR URL was not recorded in run state",
+          type: "final_pr_missing",
+        },
+        runId: "run-multi-final-pr-missing",
+        status: "failed",
+        timedOut: false,
+      }),
+    );
+    expect(harness.db.statuses.at(-1)).toEqual({
+      runId: "run-multi-final-pr-missing",
+      status: "failed",
+    });
   });
 
   test("SQLite insertRun failures do not abort a successful run", async () => {

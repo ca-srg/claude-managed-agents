@@ -221,6 +221,43 @@ describe("createRunQueueModule", () => {
     await waitFor(() => getDbStatus(db, run.runId) === "completed", "completed status in DB");
   });
 
+  test("repo-only GitHub issue enqueue targets only the primary repo with multiple enabled repos", async () => {
+    const executorRepositories: string[][] = [];
+    const { db, queue } = createHarness(async (input) => {
+      executorRepositories.push(input.repositories ?? []);
+
+      return { aborted: false, runId: input.runId, status: "completed", timedOut: false };
+    });
+    db.addRegisteredRepository("acme/api");
+
+    const run = queue.enqueue(createRunInput(42, "primary-only"));
+    queue.start();
+
+    await waitFor(() => getDbStatus(db, run.runId) === "completed", "primary-only completion");
+
+    expect(executorRepositories).toEqual([["acme/widgets"]]);
+  });
+
+  test("explicit repositories enqueue keeps the primary and requested targets", async () => {
+    const executorRepositories: string[][] = [];
+    const { db, queue } = createHarness(async (input) => {
+      executorRepositories.push(input.repositories ?? []);
+
+      return { aborted: false, runId: input.runId, status: "completed", timedOut: false };
+    });
+    db.addRegisteredRepository("acme/api");
+
+    const run = queue.enqueue({
+      ...createRunInput(42, "explicit-targets"),
+      repositories: ["acme/api"],
+    });
+    queue.start();
+
+    await waitFor(() => getDbStatus(db, run.runId) === "completed", "explicit targets completion");
+
+    expect(executorRepositories).toEqual([["acme/widgets", "acme/api"]]);
+  });
+
   test("Linear-origin enqueue requires an explicit primary repository", () => {
     const db = createDbModule(":memory:");
     db.addRegisteredRepository("acme/widgets");

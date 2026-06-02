@@ -106,9 +106,14 @@ function resolveRunStartRepositories(
   const enabledRepos = registeredRepositories
     .filter((repository) => repository.enabled)
     .map((repository) => repository.repo);
+  const hasExplicitRepositories = input.repositories !== undefined;
   const explicitRepos = input.repositories ?? [];
-  const targetRepos = explicitRepos.length > 0 ? explicitRepos : enabledRepos;
-  if (targetRepos.length === 0) {
+  const targetRepos = hasExplicitRepositories
+    ? explicitRepos
+    : input.repo === undefined
+      ? enabledRepos
+      : [input.repo];
+  if (targetRepos.length === 0 && input.repo === undefined) {
     throw new Error("At least one enabled repository must be registered before starting a run");
   }
 
