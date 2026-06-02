@@ -49,7 +49,7 @@ function createRunInput(issue: number, label: string): RunStartInput {
     configPath: label,
     dryRun: false,
     issue,
-    repo: `acme/${label}`,
+    repo: "acme/widgets",
   };
 }
 
@@ -75,6 +75,7 @@ function createHarness(executor: RunQueueModuleDeps["executor"]): {
   queue: RunQueueModule;
 } {
   const db = createDbModule(":memory:");
+  db.addRegisteredRepository("acme/widgets");
   openDbs.push(db);
   const runEvents = createRunEventsModule({ db });
   const queue = createRunQueueModule({ db, executor, runEvents });
@@ -367,6 +368,14 @@ describe("createRunQueueModule", () => {
     let resyncCalls = 0;
     const db: RunQueueModuleDeps["db"] = {
       insertRun() {},
+      listRegisteredRepositories: () => [
+        {
+          addedAt: "2026-04-28T00:00:00.000Z",
+          enabled: true,
+          repo: "acme/widgets",
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        },
+      ],
       listRuns: () => [],
       resyncOrphanedRuns: () => {
         resyncCalls += 1;
@@ -583,6 +592,7 @@ describe("createRunQueueModule", () => {
     test("race: mismatched executor run id is logged but stored run completes", async () => {
       const warnings: unknown[] = [];
       const db = createDbModule(":memory:");
+      db.addRegisteredRepository("acme/widgets");
       openDbs.push(db);
       const runEvents = createRunEventsModule({ db });
       const queue = createRunQueueModule({

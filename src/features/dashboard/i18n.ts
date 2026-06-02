@@ -108,12 +108,16 @@ const JA_TRANSLATIONS: Record<string, string> = {
   "agent ran against {count} repository": "agent は {count} 件のリポジトリで実行されました",
   "agent ran against {count} repositories": "agent は {count} 件のリポジトリで実行されました",
   "Watch a repository for auto-trigger": "自動トリガー対象のリポジトリを監視",
+  "Register a repository": "リポジトリを登録",
   "Add an": "追加した",
   "to poll for": "を監視し、",
+  "to the shared workspace. Runs use enabled registered repositories, and polling can watch for":
+    "を共有ワークスペースに登録します。実行は有効な登録済みリポジトリを使い、ポーリングでは",
   comments: "コメントと",
   "label events.": "ラベルイベントを検出します。",
   Repository: "リポジトリ",
   "Add to polled list": "監視リストに追加",
+  "Register repository": "リポジトリを登録",
   "Managed Agents usage": "Managed Agents 使用量",
   "total cost": "合計コスト",
   input: "入力",
@@ -138,6 +142,9 @@ const JA_TRANSLATIONS: Record<string, string> = {
   "Start New Run": "新規実行を開始",
   "Configure and enqueue a new managed agent run for GitHub or Linear.":
     "GitHub または Linear を起点に Managed Agent の実行を設定し、キューに追加します。",
+  "Configure and enqueue a new managed agent run across registered repositories.":
+    "登録済みリポジトリ全体を対象に Managed Agent の実行を設定し、キューに追加します。",
+  "Enabled registered repositories:": "有効な登録済みリポジトリ:",
   "Run origin": "実行の起点",
   "GitHub Issue": "GitHub Issue",
   Linear: "Linear",
@@ -146,9 +153,12 @@ const JA_TRANSLATIONS: Record<string, string> = {
   "Read the Linear issue through the enabled Linear MCP server.":
     "有効な Linear MCP サーバー経由で Linear issue を読み取ります。",
   "Issue Number": "Issue 番号",
+  Issue: "Issue",
   "GitHub Issue Number": "GitHub Issue 番号",
   "Linear Issue": "Linear Issue",
   "Required when Linear is selected.": "Linear を選択した場合に必須です。",
+  "Use a GitHub issue URL when multiple repositories are registered.":
+    "複数のリポジトリが登録されている場合は GitHub issue URL を指定してください。",
   "Vault ID": "Vault ID",
   "Config Path": "設定ファイルパス",
   "(Optional)": "（任意）",

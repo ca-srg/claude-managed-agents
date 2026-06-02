@@ -9,7 +9,7 @@ import { type ParsedRunStartInput, type RunStartInput, RunStartInputSchema } fro
 
 type DbModule = Pick<
   ReturnType<typeof createDbModule>,
-  "insertRun" | "listRuns" | "resyncOrphanedRuns" | "setRunStatus"
+  "insertRun" | "listRegisteredRepositories" | "listRuns" | "resyncOrphanedRuns" | "setRunStatus"
 >;
 
 type RunEventsModule = Pick<ReturnType<typeof createRunEventsModule>, "emit">;
@@ -20,7 +20,7 @@ type QueuePhase = "aborted" | "completed" | "failed" | "queued" | "running";
 
 type QueuedJob = {
   controller: AbortController;
-  input: ParsedRunStartInput;
+  input: ResolvedRunStartInput;
   runId: string;
 };
 
@@ -37,6 +37,11 @@ type BunUuidApi = {
 export type RunExecutionInput = RunStartInput & {
   runId: string;
   signal: AbortSignal;
+};
+
+type ResolvedRunStartInput = ParsedRunStartInput & {
+  repo: string;
+  repositories: string[];
 };
 
 export type RunExecutionResult = {
@@ -70,7 +75,7 @@ export type StartOptions = {
 const DEFAULT_CANCEL_TIMEOUT_MS = 5_000;
 const STATUS_LOOKUP_LIMIT = 10_000;
 
-function createQueuedRunState(runId: string, input: ParsedRunStartInput): RunState {
+function createQueuedRunState(runId: string, input: ResolvedRunStartInput): RunState {
   const origin =
     input.origin === "github_issue"
       ? githubIssueOrigin({ issueNumber: input.issue, repo: input.repo })
@@ -81,12 +86,67 @@ function createQueuedRunState(runId: string, input: ParsedRunStartInput): RunSta
     issueNumber: origin.type === "github_issue" ? origin.issueNumber : null,
     origin,
     repo: input.repo,
+    repositories: input.repositories.map((repo) => ({
+      branch: `queued/${originBranchSegment(origin)}`,
+      repo,
+      role: repo === input.repo ? "primary" : "target",
+    })),
     runId,
     sessionIds: [],
     startedAt: new Date().toISOString(),
     subIssues: [],
     vaultId: input.vaultId,
   };
+}
+
+function resolveRunStartRepositories(
+  input: ParsedRunStartInput,
+  registeredRepositories: Array<{ enabled: boolean; repo: string }>,
+): ResolvedRunStartInput {
+  const enabledRepos = registeredRepositories
+    .filter((repository) => repository.enabled)
+    .map((repository) => repository.repo);
+  const explicitRepos = input.repositories ?? [];
+  const targetRepos = explicitRepos.length > 0 ? explicitRepos : enabledRepos;
+  if (targetRepos.length === 0) {
+    throw new Error("At least one enabled repository must be registered before starting a run");
+  }
+
+  const registeredEnabled = new Set(enabledRepos);
+  for (const repo of targetRepos) {
+    if (!registeredEnabled.has(repo)) {
+      throw new Error(`Repository ${repo} is not registered and enabled`);
+    }
+  }
+
+  let primaryRepo = input.repo;
+  if (input.origin === "github_issue" && primaryRepo === undefined) {
+    if (targetRepos.length !== 1) {
+      throw new Error(
+        "GitHub issue number is ambiguous with multiple registered repositories; pass an issue URL",
+      );
+    }
+    const onlyRepo = targetRepos[0];
+    if (onlyRepo === undefined) {
+      throw new Error("At least one enabled repository must be registered before starting a run");
+    }
+    primaryRepo = onlyRepo;
+  }
+
+  if (primaryRepo === undefined) {
+    const firstRepo = targetRepos[0];
+    if (firstRepo === undefined) {
+      throw new Error("At least one enabled repository must be registered before starting a run");
+    }
+    primaryRepo = firstRepo;
+  }
+
+  if (!registeredEnabled.has(primaryRepo)) {
+    throw new Error(`Primary repository ${primaryRepo} is not registered and enabled`);
+  }
+
+  const repositories = Array.from(new Set([primaryRepo, ...targetRepos]));
+  return { ...input, repo: primaryRepo, repositories };
 }
 
 function createRunId(): string {
@@ -284,14 +344,18 @@ export function createRunQueueModule(deps: RunQueueModuleDeps) {
 
   function enqueue(input: RunStartInput): { position: number; runId: string } {
     const parsedInput = RunStartInputSchema.parse(input);
+    const resolvedInput = resolveRunStartRepositories(
+      parsedInput,
+      deps.db.listRegisteredRepositories({ enabledOnly: true }),
+    );
     const runId = createRunId();
     const controller = new AbortController();
 
-    deps.db.insertRun(createQueuedRunState(runId, parsedInput));
+    deps.db.insertRun(createQueuedRunState(runId, resolvedInput));
     deps.db.setRunStatus(runId, "queued");
     emitPhase(runId, "queued");
 
-    queue.push({ controller, input: parsedInput, runId });
+    queue.push({ controller, input: resolvedInput, runId });
     const position = queue.length;
     scheduleWorker();
 

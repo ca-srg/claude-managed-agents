@@ -10,6 +10,13 @@ export type BuildParentPromptParams = {
   };
   repoOwner: string;
   repoName: string;
+  repositories?: Array<{
+    baseBranch: string;
+    mountPath: string;
+    repoName: string;
+    repoOwner: string;
+    role: "primary" | "target";
+  }>;
   parentIssueNumber?: number;
   origin?: RunOrigin;
   branch: string;
@@ -40,6 +47,7 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
     git,
     repoOwner,
     repoName,
+    repositories,
     parentIssueNumber,
     origin,
     branch,
@@ -63,6 +71,18 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
     throw new Error("origin or parentIssueNumber is required");
   }
 
+  const repositoryList = repositories?.length
+    ? repositories
+    : [
+        {
+          baseBranch,
+          mountPath: `/workspace/${repoName}`,
+          repoName,
+          repoOwner,
+          role: "primary" as const,
+        },
+      ];
+
   const basePrompt =
     resolvedOrigin.type === "github_issue"
       ? buildGitHubIssuePrompt({
@@ -72,6 +92,7 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
           git,
           maxSubIssues,
           parentIssueNumber: resolvedOrigin.issueNumber,
+          repositories: repositoryList,
           repoName,
           repoOwner,
         })
@@ -82,6 +103,7 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
           git,
           maxSubIssues,
           origin: resolvedOrigin,
+          repositories: repositoryList,
           repoName,
           repoOwner,
         });
@@ -100,15 +122,19 @@ function buildGitHubIssuePrompt(params: {
   git: BuildParentPromptParams["git"];
   maxSubIssues: number;
   parentIssueNumber: number;
+  repositories: NonNullable<BuildParentPromptParams["repositories"]>;
   repoName: string;
   repoOwner: string;
 }): string {
+  const multiRepoSection = renderWorkspaceRepositoriesSection(params.repositories, params.branch);
   return `You are the ORCHESTRATOR (coordinator agent). You do not edit code or run tests directly.
-Your goal is to resolve GitHub issue #${params.parentIssueNumber} in ${params.repoOwner}/${params.repoName} by decomposing it into smaller, manageable tasks and delegating each to the \`${CHILD_AGENT_NAME}\` sub-agent through Managed Agents' multi-agent coordinator topology.
+Your goal is to resolve GitHub issue #${params.parentIssueNumber} in ${params.repoOwner}/${params.repoName} by decomposing it into smaller, manageable tasks and delegating each to the \`${CHILD_AGENT_NAME}\` sub-agent through Managed Agents' multi-agent coordinator topology. Work may span any registered repository mounted in this session.
 
 MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
+
+${multiRepoSection}
 
 Follow these steps:
 
@@ -118,9 +144,9 @@ MUST NOT delegate to \`${CHILD_AGENT_NAME}\` more than ${params.maxSubIssues} ti
 Step 2: For each sub-task, call the \`create_sub_issue\` custom tool to track progress on GitHub.
 MUST handle \`create_sub_issue\` returning an existing (deduplicated) sub-issue without error.
 
-Step 3: For each sub-task, delegate to the \`${CHILD_AGENT_NAME}\` sub-agent. Send the sub-agent a clear thread message that includes:
+Step 3: For each sub-task, decide which registered repository or repositories it touches, then delegate to the \`${CHILD_AGENT_NAME}\` sub-agent. Send the sub-agent a clear thread message that includes:
 - (a) Task spec: title, description, and ordered acceptance criteria.
-- (b) Branch checkout-first: \`git fetch && git checkout -B ${params.branch} origin/${params.branch} || git checkout -B ${params.branch} origin/${params.baseBranch}\` then \`git pull --ff-only origin ${params.branch} || true\`
+- (b) Repository scope and mount paths. For every touched repository, run its checkout-first command from the table above before editing.
 - (c) Commit style = ${params.commitStyle}
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
@@ -131,7 +157,7 @@ Wait for each sub-agent thread to reply before delegating the next one. Sub-agen
 
 If a sub-agent reports failure, analyze the error, generate a corrective brief with explicit additional constraints, and re-delegate the same task to \`${CHILD_AGENT_NAME}\` (max 3 retries per task).
 
-Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body to close the parent issue.
+Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body for the primary GitHub issue repository (${params.repoOwner}/${params.repoName}) to close the parent issue. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
 Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
 }
@@ -143,6 +169,7 @@ function buildLinearIssuePrompt(params: {
   git: BuildParentPromptParams["git"];
   maxSubIssues: number;
   origin: Extract<RunOrigin, { type: "linear_issue" }>;
+  repositories: NonNullable<BuildParentPromptParams["repositories"]>;
   repoName: string;
   repoOwner: string;
 }): string {
@@ -151,13 +178,17 @@ function buildLinearIssuePrompt(params: {
     ? `${originDisplay(params.origin)} (${originLink})`
     : originDisplay(params.origin);
 
+  const multiRepoSection = renderWorkspaceRepositoriesSection(params.repositories, params.branch);
+
   return `You are the ORCHESTRATOR (coordinator agent). You do not edit code or run tests directly.
-Your goal is to resolve Linear issue ${originLine} by implementing the required changes in GitHub repository ${params.repoOwner}/${params.repoName}, then delegating implementation work to the \`${CHILD_AGENT_NAME}\` sub-agent through Managed Agents' multi-agent coordinator topology.
+Your goal is to resolve Linear issue ${originLine} by implementing the required changes across the registered GitHub repositories mounted in this session, then delegating implementation work to the \`${CHILD_AGENT_NAME}\` sub-agent through Managed Agents' multi-agent coordinator topology.
 
 MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST NOT use the GitHub-only \`create_sub_issue\` custom tool for Linear-origin runs; create/reuse Linear child/sub-issues with Linear MCP issue tools instead.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
+
+${multiRepoSection}
 
 Follow these steps:
 
@@ -166,9 +197,9 @@ MUST NOT delegate to \`${CHILD_AGENT_NAME}\` more than ${params.maxSubIssues} ti
 
 Step 2: For each sub-task, create or reuse exactly one Linear child/sub-issue before delegation. Prefer \`list_issues\` to find existing child issues with \`parentId=<Linear parent issue identifier/id>\` and the same stable \`taskId\`, then prefer \`save_issue\` to create or update the Linear child/sub-issue with \`parentId=<Linear parent issue identifier/id>\`, title, description, ordered acceptance criteria, and stable \`taskId\` that is deterministic across reruns. \`save_issue\` distinguishes create vs update solely by the presence of \`id\`: omit \`id\` to create a new issue (\`title\` and \`team\` required) and pass \`id\` to update an existing one. MUST NOT pass any \`method\`, \`action\`, \`mode\`, or similar create/update selector argument — \`save_issue\` rejects unknown keys. If \`list_issues\` or \`save_issue\` are not available, use the equivalent issue list/create/update tools from the exposed Linear MCP schema. Reuse matching existing Linear child/sub-issues instead of creating duplicates.
 
-Step 3: For each created/reused Linear child/sub-issue, delegate to the \`${CHILD_AGENT_NAME}\` sub-agent. Send the sub-agent a clear thread message that includes:
+Step 3: For each created/reused Linear child/sub-issue, delegate to the \`${CHILD_AGENT_NAME}\` sub-agent after deciding which registered repository or repositories it touches. Send the sub-agent a clear thread message that includes:
 - (a) Task spec: Linear child/sub-issue identifier or id, title, description, and ordered acceptance criteria derived from that Linear child/sub-issue.
-- (b) Branch checkout-first: \`git fetch && git checkout -B ${params.branch} origin/${params.branch} || git checkout -B ${params.branch} origin/${params.baseBranch}\` then \`git pull --ff-only origin ${params.branch} || true\`
+- (b) Repository scope and mount paths. For every touched repository, run its checkout-first command from the table above before editing.
 - (c) Commit style = ${params.commitStyle}
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
@@ -179,9 +210,24 @@ Wait for each sub-agent thread to reply before delegating the next one. Sub-agen
 
 If a sub-agent reports failure, analyze the error, generate a corrective brief with explicit additional constraints, and re-delegate the same Linear child/sub-issue to \`${CHILD_AGENT_NAME}\` (max 3 retries per task).
 
-Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body. Do not include GitHub closing keywords such as \`Closes #...\`; the server will append Linear origin provenance.
+Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body for the primary tracking repository (${params.repoOwner}/${params.repoName}). Do not include GitHub closing keywords such as \`Closes #...\`; the server will append Linear origin provenance. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
 Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
+}
+
+function renderWorkspaceRepositoriesSection(
+  repositories: NonNullable<BuildParentPromptParams["repositories"]>,
+  branch: string,
+): string {
+  const rows = repositories
+    .map((repository) => {
+      const repo = `${repository.repoOwner}/${repository.repoName}`;
+      const checkout = `git -C ${repository.mountPath} fetch && (git -C ${repository.mountPath} checkout -B ${branch} origin/${branch} || git -C ${repository.mountPath} checkout -B ${branch} origin/${repository.baseBranch}) && git -C ${repository.mountPath} pull --ff-only origin ${branch} || true`;
+      return `- ${repo} (${repository.role})\n  - mount: ${repository.mountPath}\n  - base: ${repository.baseBranch}\n  - checkout-first: \`${checkout}\``;
+    })
+    .join("\n");
+
+  return `## Registered repositories mounted for this run\n\n${rows}\n\nUse one branch name across repositories: \`${branch}\`. Only edit repositories that are needed for the issue. When multiple repositories are touched, keep commits and PRs scoped per repository.`;
 }
 
 function renderRepoPromptSection(

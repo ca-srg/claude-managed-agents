@@ -235,7 +235,7 @@ describe("createApp", () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
-    expect(body).toContain('href="/repos/acme/widgets"');
+    expect(body).toContain('href="https://github.com/acme/widgets"');
   });
 
   test("GET / returns empty state when no runs exist", async () => {
@@ -259,7 +259,7 @@ describe("createApp", () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
-    expect(body).toContain('href="/repos/acme/widgets"');
+    expect(body).toContain('href="https://github.com/acme/widgets"');
   });
 
   test("GET /runs returns 200 HTML containing all runs", async () => {
@@ -735,7 +735,7 @@ describe("createApp", () => {
     expect(body).toContain("back to repositories");
   });
 
-  test("GET /runs/new returns form HTML with all 5 fields", async () => {
+  test("GET /runs/new returns form HTML with global run fields", async () => {
     const { app } = createAppWithSeededDb();
 
     const response = await app.request("/runs/new");
@@ -744,7 +744,7 @@ describe("createApp", () => {
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
     expect(body).toContain('name="issue"');
-    expect(body).toContain('name="repo"');
+    expect(body).not.toContain('name="repo"');
     expect(body).toContain('name="dryRun"');
     expect(body).toContain('name="vaultId"');
     expect(body).toContain('name="configPath"');
@@ -759,7 +759,6 @@ describe("createApp", () => {
 
     const formData = new URLSearchParams();
     formData.append("issue", "42");
-    formData.append("repo", "acme/widgets");
     formData.append("dryRun", "on");
 
     const response = await app.request("/runs/new", {
@@ -783,7 +782,6 @@ describe("createApp", () => {
     });
 
     const formData = new URLSearchParams();
-    formData.append("repo", "acme/widgets");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -799,7 +797,6 @@ describe("createApp", () => {
     expect(body).toContain("<!doctype html>");
     expect(body).toContain("Issue number must be a positive integer.");
     expect(body).not.toContain("Expected number, received nan");
-    expect(body).toContain('value="acme/widgets"');
   });
 
   test("POST /runs/new localizes validation errors", async () => {
@@ -810,7 +807,6 @@ describe("createApp", () => {
     });
 
     const formData = new URLSearchParams();
-    formData.append("repo", "not-a-slug");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -824,7 +820,6 @@ describe("createApp", () => {
 
     expect(response.status).toBe(400);
     expect(body).toContain("Issue 番号は正の整数である必要があります");
-    expect(body).toContain("リポジトリは owner/repository 形式で入力してください");
     expect(body).not.toContain("Expected number, received nan");
   });
 
@@ -833,7 +828,6 @@ describe("createApp", () => {
 
     const formData = new URLSearchParams();
     formData.append("issue", "42");
-    formData.append("repo", "acme/widgets");
 
     const response = await app.request("/runs/new", {
       method: "POST",
@@ -1382,7 +1376,7 @@ describe("createApp", () => {
     const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain('href="/repos/acme/freshly-watched"');
+    expect(body).toContain('href="https://github.com/acme/freshly-watched"');
     expect(body).toContain("polled");
   });
 
@@ -1400,16 +1394,37 @@ describe("createApp", () => {
     expect(body).toContain("polled (paused)");
   });
 
-  test("GET /repositories renders the add polled repository form with default trigger labels", async () => {
+  test("GET /repositories renders the repository registration form with default trigger labels", async () => {
     const { app } = createAppWithSeededDb();
 
     const response = await app.request("/repositories");
     const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain('action="/polled-repos"');
-    expect(body).toContain("Watch a repository for auto-trigger");
+    expect(body).toContain('action="/repositories"');
+    expect(body).toContain("Register a repository");
     expect(body).toContain('placeholder="acme/widgets"');
+  });
+
+  test("POST /repositories with new slug registers repo and redirects to list", async () => {
+    const { app, db } = createAppWithSeededDb();
+
+    const formData = new URLSearchParams();
+    formData.append("repo", "acme/widgets");
+
+    const response = await app.request("/repositories", {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe("/repositories");
+    const registered = db.getRegisteredRepository("acme/widgets");
+    expect(registered?.enabled).toBe(true);
   });
 
   test("POST /polled-repos with new slug adds repo and redirects to detail page", async () => {

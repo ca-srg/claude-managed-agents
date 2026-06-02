@@ -3,6 +3,8 @@
 ## 作業ルール
 
 - このリポジトリには別のエージェントも作業しているため、他のエージェントが変更したものはそのままにしておいてください。
+- Claude Managed Agents は新しい技術なので必ず下記のドキュメントを参照してから実装を進める。
+  - https://github.com/anthropics/skills/tree/main/skills/claude-api/shared
 
 ## コマンド
 

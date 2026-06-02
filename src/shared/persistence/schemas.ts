@@ -6,6 +6,40 @@ const NonEmptyStringSchema = z.string().min(1);
 const PositiveIntegerSchema = z.number().int().positive();
 const NonNegativeIntegerSchema = z.number().int().nonnegative();
 
+// `owner/name` slug, validated server-side wherever it is parsed.
+const RepoSlugSchema = z
+  .string()
+  .min(3)
+  .max(140)
+  .regex(
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/,
+    {
+      message: "repo must match owner/name",
+    },
+  );
+export type RepoSlug = z.infer<typeof RepoSlugSchema>;
+export { RepoSlugSchema };
+
+export const RegisteredRepositorySchema = z.object({
+  addedAt: NonEmptyStringSchema,
+  enabled: z.boolean(),
+  repo: RepoSlugSchema,
+  updatedAt: NonEmptyStringSchema,
+});
+export type RegisteredRepository = z.infer<typeof RegisteredRepositorySchema>;
+
+export const RunRepositoryRoleSchema = z.enum(["primary", "target"]);
+export type RunRepositoryRole = z.infer<typeof RunRepositoryRoleSchema>;
+
+export const RunRepositorySchema = z.object({
+  baseBranch: NonEmptyStringSchema.optional(),
+  branch: NonEmptyStringSchema.optional(),
+  mountPath: NonEmptyStringSchema.optional(),
+  repo: RepoSlugSchema,
+  role: RunRepositoryRoleSchema,
+});
+export type RunRepository = z.infer<typeof RunRepositorySchema>;
+
 export const SubIssueSchema = z.object({
   issueId: PositiveIntegerSchema,
   issueNumber: PositiveIntegerSchema,
@@ -19,6 +53,7 @@ export const RunStateSchema = z.object({
   pid: PositiveIntegerSchema.optional(),
   prUrl: NonEmptyStringSchema.optional(),
   repo: NonEmptyStringSchema,
+  repositories: z.array(RunRepositorySchema).optional(),
   runId: NonEmptyStringSchema,
   sessionIds: z.array(NonEmptyStringSchema),
   startedAt: NonEmptyStringSchema,
@@ -165,20 +200,6 @@ export const RestoreInputSchema = z.object({
 export type RestoreInput = z.infer<typeof RestoreInputSchema>;
 
 // --- Per-repository prompt overrides ---
-
-// `owner/name` slug, validated server-side wherever it is parsed.
-const RepoSlugSchema = z
-  .string()
-  .min(3)
-  .max(140)
-  .regex(
-    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/,
-    {
-      message: "repo must match owner/name",
-    },
-  );
-export type RepoSlug = z.infer<typeof RepoSlugSchema>;
-export { RepoSlugSchema };
 
 // Repo-level prompts target either parent or child agent only.
 // Runtime templates are not configurable per repo.

@@ -9,6 +9,7 @@ const RunExecutionBaseSchema = {
   configPath: NonEmptyStringSchema.optional(),
   dryRun: z.boolean(),
   repo: RepoSlugSchema,
+  repositories: z.array(RepoSlugSchema).optional(),
   runId: NonEmptyStringSchema.optional(),
   vaultId: NonEmptyStringSchema.optional(),
 };

@@ -174,7 +174,13 @@ const RunStartBaseSchema = {
     .boolean()
     .default(false)
     .describe("Whether to enqueue the run in dry-run mode without remote execution."),
-  repo: RepoSlugSchema.describe("GitHub repository slug in owner/name form."),
+  repo: RepoSlugSchema.optional().describe(
+    "Optional legacy primary GitHub repository slug. When omitted, registered repositories are used.",
+  ),
+  repositories: z
+    .array(RepoSlugSchema)
+    .optional()
+    .describe("Optional explicit registered repositories to mount for the run."),
   vaultId: z
     .string()
     .min(1)
@@ -204,11 +210,47 @@ function withDefaultRunOrigin(value: unknown): unknown {
   }
 
   const record = value as Record<string, unknown>;
-  if (record.origin !== undefined) {
-    return value;
+  const withOrigin = record.origin === undefined ? { ...record, origin: "github_issue" } : record;
+  if (withOrigin.origin !== "github_issue") {
+    return withOrigin;
   }
 
-  return { ...record, origin: "github_issue" };
+  const normalizedIssue = normalizeGitHubIssueRef(withOrigin.issue);
+  if (normalizedIssue === null) {
+    return withOrigin;
+  }
+
+  return {
+    ...withOrigin,
+    issue: normalizedIssue.issue,
+    repo: typeof withOrigin.repo === "string" ? withOrigin.repo : normalizedIssue.repo,
+  };
+}
+
+function normalizeGitHubIssueRef(value: unknown): { issue: number; repo?: string } | null {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return { issue: value };
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const numeric = trimmed.replace(/^#/, "");
+  if (/^[1-9]\d*$/.test(numeric)) {
+    return { issue: Number(numeric) };
+  }
+
+  const match = trimmed.match(
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)(?:[/?#].*)?$/i,
+  );
+  if (!match) {
+    return null;
+  }
+
+  const [, owner, repo, issue] = match;
+  return { issue: Number(issue), repo: `${owner}/${repo}` };
 }
 
 export const RunStartInputSchema = z

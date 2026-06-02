@@ -8,7 +8,6 @@ export type RunNewPageProps = {
     issue?: string;
     linearIssue?: string;
     origin?: "github_issue" | "linear_issue";
-    repo?: string;
     dryRun?: boolean;
     vaultId?: string;
     configPath?: string;
@@ -17,19 +16,20 @@ export type RunNewPageProps = {
     issue?: string;
     linearIssue?: string;
     origin?: string;
-    repo?: string;
     dryRun?: string;
     vaultId?: string;
     configPath?: string;
     _form?: string;
   };
   linearMcpEnabled?: boolean;
+  registeredRepositoryCount?: number;
 };
 
 export const RunNewPage: FC<RunNewPageProps> = ({
   values = {},
   errors = {},
   linearMcpEnabled = false,
+  registeredRepositoryCount = 0,
 }) => {
   const selectedOrigin = linearMcpEnabled ? (values.origin ?? "github_issue") : "github_issue";
   const isGithubOrigin = selectedOrigin === "github_issue";
@@ -42,7 +42,10 @@ export const RunNewPage: FC<RunNewPageProps> = ({
             {t("Start New Run")}
           </h1>
           <p class="text-neutral-500">
-            {t("Configure and enqueue a new managed agent run for GitHub or Linear.")}
+            {t("Configure and enqueue a new managed agent run across registered repositories.")}
+          </p>
+          <p class="mt-2 text-sm text-neutral-500">
+            {t("Enabled registered repositories:")} {registeredRepositoryCount}
           </p>
         </header>
 
@@ -101,60 +104,37 @@ export const RunNewPage: FC<RunNewPageProps> = ({
               </fieldset>
             )}
 
-            <div>
-              <label htmlFor="repo" class="block text-sm font-medium text-neutral-900 mb-1">
-                {t("Repository")} <span class="text-brand-600">*</span>
-              </label>
-              <input
-                type="text"
-                id="repo"
-                name="repo"
-                required
-                pattern="[\w.-]+/[\w.-]+"
-                placeholder="CyberAgentSRG/server"
-                value={values.repo ?? ""}
-                class={`block w-full rounded-md shadow-sm sm:text-sm px-3 py-2 border focus:ring-2 focus:ring-offset-0 outline-none transition-colors ${
-                  errors.repo
-                    ? "border-status-failed-fg/50 focus:border-status-failed-fg focus:ring-status-failed-fg/20 bg-status-failed-bg/30"
-                    : "border-neutral-300 focus:border-brand-500 focus:ring-brand-500/20 bg-surface"
-                }`}
-              />
-              {errors.repo ? (
-                <p class="mt-1 text-sm text-status-failed-fg">{t(errors.repo)}</p>
-              ) : (
-                <p class="mt-1 text-xs text-neutral-500">{t("Format: owner/repository")}</p>
-              )}
-            </div>
-
             <div
               data-origin-field={linearMcpEnabled ? "github_issue" : undefined}
               hidden={linearMcpEnabled && !isGithubOrigin}
             >
               <label htmlFor="issue" class="block text-sm font-medium text-neutral-900 mb-1">
-                {linearMcpEnabled ? t("GitHub Issue Number") : t("Issue Number")}{" "}
+                {linearMcpEnabled ? t("GitHub Issue") : t("Issue")}{" "}
                 <span class="text-brand-600">*</span>
               </label>
-              <div class="relative">
-                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span class="text-neutral-500 sm:text-sm">#</span>
-                </div>
+              <div>
                 <input
-                  type="number"
+                  type="text"
                   id="issue"
                   name="issue"
                   required={!linearMcpEnabled || isGithubOrigin}
                   data-required-when-visible={linearMcpEnabled ? "true" : undefined}
-                  min="1"
-                  placeholder="42"
+                  placeholder="42 or https://github.com/owner/repo/issues/42"
                   value={values.issue ?? ""}
-                  class={`block w-full pl-7 rounded-md shadow-sm sm:text-sm px-3 py-2 border focus:ring-2 focus:ring-offset-0 outline-none transition-colors ${
+                  class={`block w-full rounded-md shadow-sm sm:text-sm px-3 py-2 border focus:ring-2 focus:ring-offset-0 outline-none transition-colors ${
                     errors.issue
                       ? "border-status-failed-fg/50 focus:border-status-failed-fg focus:ring-status-failed-fg/20 bg-status-failed-bg/30"
                       : "border-neutral-300 focus:border-brand-500 focus:ring-brand-500/20 bg-surface"
                   }`}
                 />
               </div>
-              {errors.issue && <p class="mt-1 text-sm text-status-failed-fg">{t(errors.issue)}</p>}
+              {errors.issue ? (
+                <p class="mt-1 text-sm text-status-failed-fg">{t(errors.issue)}</p>
+              ) : (
+                <p class="mt-1 text-xs text-neutral-500">
+                  {t("Use a GitHub issue URL when multiple repositories are registered.")}
+                </p>
+              )}
             </div>
 
             {linearMcpEnabled && (

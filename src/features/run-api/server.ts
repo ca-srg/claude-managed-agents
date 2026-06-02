@@ -285,9 +285,22 @@ export function createRunApiRoutes(deps: RunApiDeps): Hono {
       return c.json(schemaError(parsedInput.error.issues), 400);
     }
 
-    const { position, runId } = deps.runQueue.enqueue(parsedInput.data);
+    let queued: { position: number; runId: string };
+    try {
+      queued = deps.runQueue.enqueue(parsedInput.data);
+    } catch (error) {
+      return c.json(
+        {
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            type: "run_target_resolution",
+          },
+        },
+        400,
+      );
+    }
 
-    return c.json({ position, runId, status: "queued" }, 200);
+    return c.json({ position: queued.position, runId: queued.runId, status: "queued" }, 200);
   });
 
   app.post("/api/runs/:runId/stop", async (c) => {

@@ -32,9 +32,11 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain("GitHub App GitHub Operations skill");
     expect(prompt).toContain("GitHub MCP/API issue-read tool");
     expect(prompt).toContain(
-      "git fetch && git checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git checkout -B agent/issue-123/fix-bug origin/main",
+      "git -C /workspace/claude-managed-agents fetch && (git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/main)",
     );
-    expect(prompt).toContain("git pull --ff-only origin agent/issue-123/fix-bug || true");
+    expect(prompt).toContain(
+      "git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true",
+    );
     expect(prompt).toContain("Commit style = conventional");
     expect(prompt).toContain(
       "Git identity = claude-agent[bot]/claude-agent@users.noreply.github.com",

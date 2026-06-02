@@ -197,6 +197,7 @@ function setupTestDb(
   runQueue: ReturnType<typeof createRunQueueModule>;
 } {
   const db = createDbModule(":memory:");
+  db.addRegisteredRepository("acme/widgets");
   openDbs.push(db);
   const runEvents = createRunEventsModule({ db });
   const runQueue = createRunQueueModule({
@@ -954,6 +955,7 @@ describe("createRunApiRoutes", () => {
   test("GET /api/runs/:runId/events handles session stream error paths", async () => {
     const warnCalls: Array<{ fields: unknown; message: string }> = [];
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const runQueue = createRunQueueModule({
@@ -1174,12 +1176,14 @@ describe("createRunApiRoutes", () => {
     expect(enqueuedInputs).toEqual([]);
   });
 
-  test("POST /api/runs rejects missing repo field with schema error", async () => {
+  test("POST /api/runs accepts missing repo field for registered-repository resolution", async () => {
     const { app, enqueuedInputs } = createFakeHarness();
-    const payload = await expectSchemaError(app, { issue: 42 });
+    const response = await postJson(app, { issue: 42 });
+    const payload = (await response.json()) as QueueResponse;
 
-    expect(payload.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
-    expect(enqueuedInputs).toEqual([]);
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ position: 1, runId: "run-1", status: "queued" });
+    expect(enqueuedInputs).toEqual([{ dryRun: false, issue: 42, origin: "github_issue" }]);
   });
 
   test("POST /api/runs rejects malformed JSON error body without enqueueing", async () => {
@@ -1287,6 +1291,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs/:runId/stop cancels a queued run and removes it from the queue", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const executorRunIds: string[] = [];
@@ -1323,6 +1328,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs/:runId/stop cancels a running run and marks it aborted", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     let executorStarted = false;
@@ -1433,6 +1439,7 @@ describe("createRunApiRoutes", () => {
 
   test("POST /api/runs preserves FIFO serialization through runQueue", async () => {
     const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
     openDbs.push(db);
     const runEvents = createRunEventsModule({ db });
     const executionOrder: number[] = [];

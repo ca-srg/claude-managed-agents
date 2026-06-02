@@ -43,6 +43,8 @@ import {
   PromptRevisionSourceSchema,
   PromptRowSchema,
   PromptSaveInputSchema,
+  type RegisteredRepository,
+  RegisteredRepositorySchema,
   RepoChatMessageRowSchema,
   RepoChatStateSchema,
   RepoChatThreadRowSchema,
@@ -65,6 +67,9 @@ import {
   RunEventKindSchema,
   RunEventSchema,
   RunPhaseSchema,
+  type RunRepository,
+  RunRepositoryRoleSchema,
+  RunRepositorySchema,
   RunStateSchema,
   RunStatusSchema,
   RunSummarySchema,
@@ -122,7 +127,7 @@ const { Database } = require("bun:sqlite") as { Database: DatabaseConstructor };
 const DEFAULT_DB_PATH = ".github-issue-agent/dashboard.db";
 const DEFAULT_LIST_RUNS_LIMIT = 100;
 const RUN_ID_SCHEMA = RunStateSchema.shape.runId;
-const REPO_SCHEMA = RunStateSchema.shape.repo;
+const REPO_SCHEMA = RepoSlugSchema;
 const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -238,6 +243,25 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_repo_environment_revisions_sha
     ON repo_environment_revisions(repo, packages_sha256);
   CREATE INDEX IF NOT EXISTS idx_repo_prompts_repo ON repo_prompts(repo);
+  CREATE TABLE IF NOT EXISTS registered_repositories (
+    repo TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    added_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_registered_repositories_enabled
+    ON registered_repositories(enabled);
+  CREATE TABLE IF NOT EXISTS run_repositories (
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    repo TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('primary','target')),
+    base_branch TEXT,
+    branch TEXT,
+    mount_path TEXT,
+    PRIMARY KEY (run_id, repo)
+  );
+  CREATE INDEX IF NOT EXISTS idx_run_repositories_repo
+    ON run_repositories(repo, run_id);
   CREATE TABLE IF NOT EXISTS github_trigger_dedupe (
     dedupe_key TEXT PRIMARY KEY,
     repo TEXT NOT NULL,
@@ -605,6 +629,21 @@ export type PolledRepository = {
   updatedAt: string;
 };
 
+type RegisteredRepositoryRow = {
+  addedAt: string;
+  enabled: number;
+  repo: string;
+  updatedAt: string;
+};
+
+type RunRepositoryRow = {
+  baseBranch: string | null;
+  branch: string | null;
+  mountPath: string | null;
+  repo: string;
+  role: string;
+};
+
 type PolledRepositoryRow = {
   addedAt: string;
   enabled: number;
@@ -735,6 +774,12 @@ type PreparedStatements = {
   aggregateUsageGlobal: StatementLike<UsageAggregateDbRow, []>;
   aggregateUsageByRepoAll: StatementLike<RepoUsageAggregateDbRow, []>;
   aggregateUsageByAllRuns: StatementLike<RunUsageAggregateDbRow, []>;
+  deleteRunRepositoriesByRun: StatementLike<unknown, [string]>;
+  getRunRepositoriesByRun: StatementLike<RunRepositoryRow, [string]>;
+  insertRunRepository: StatementLike<
+    unknown,
+    [string, string, string, string | null, string | null, string | null]
+  >;
   insertSubIssue: StatementLike<unknown, [string, string, number, number]>;
   listRepositories: StatementLike<RepositorySummaryRow, []>;
   listRuns: StatementLike<RunSummaryRow, [number]>;
@@ -800,6 +845,13 @@ type PreparedStatements = {
     unknown,
     [string, string, number, GithubTriggerSource, string, string | null, string]
   >;
+  // Registered repositories (global workspace targets)
+  deleteRegisteredRepository: StatementLike<unknown, [string]>;
+  getRegisteredRepository: StatementLike<RegisteredRepositoryRow, [string]>;
+  listRegisteredRepositories: StatementLike<RegisteredRepositoryRow, []>;
+  listEnabledRegisteredRepositories: StatementLike<RegisteredRepositoryRow, []>;
+  setRegisteredRepositoryEnabled: StatementLike<unknown, [number, string, string]>;
+  upsertRegisteredRepository: StatementLike<unknown, [string, number, string, string]>;
   // Polled repositories (auto-trigger targets configured via the WebUI)
   deletePolledRepository: StatementLike<unknown, [string]>;
   getPolledRepository: StatementLike<PolledRepositoryRow, [string]>;
@@ -1259,6 +1311,26 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     migrateRunsAddColumn("origin_title", "ALTER TABLE runs ADD COLUMN origin_title TEXT");
   }
 
+  function backfillRepositoryTables(): void {
+    db.exec(`
+      INSERT OR IGNORE INTO registered_repositories (repo, enabled, added_at, updated_at)
+      SELECT repo, enabled, added_at, updated_at
+      FROM polled_repositories;
+
+      INSERT OR IGNORE INTO registered_repositories (repo, enabled, added_at, updated_at)
+      SELECT
+        repo,
+        0,
+        COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      FROM runs;
+
+      INSERT OR IGNORE INTO run_repositories (run_id, repo, role, branch)
+      SELECT run_id, repo, 'primary', branch
+      FROM runs;
+    `);
+  }
+
   function getRuntime(): PreparedRuntime {
     if (runtime !== null) {
       return runtime;
@@ -1266,6 +1338,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
 
     db.exec(SCHEMA_SQL);
     migrateRunsColumns();
+    backfillRepositoryTables();
 
     const statements: PreparedStatements = {
       deleteSubIssuesByRun: db.query("DELETE FROM sub_issues WHERE run_id = ?1"),
@@ -1365,9 +1438,11 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            origin_identifier AS originIdentifier,
            origin_url AS originUrl,
            origin_title AS originTitle
-         FROM runs
-         WHERE repo = ?1
-         ORDER BY started_at DESC`,
+          FROM runs
+          WHERE run_id IN (
+            SELECT run_id FROM run_repositories WHERE repo = ?1
+          )
+          ORDER BY started_at DESC`,
       ),
       getSessionIdsByRun: db.query<{ sessionId: string }, [string]>(
         `SELECT session_id AS sessionId
@@ -1542,10 +1617,10 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            SUM(u.cache_read_input_tokens) AS cacheReadInputTokens,
            SUM(u.model_request_count) AS modelRequestCount,
            SUM(u.cost_usd) AS costUsd
-         FROM session_usage u
-         JOIN sessions s ON s.session_id = u.session_id
-         JOIN runs r ON r.run_id = s.run_id
-         WHERE r.repo = ?1`,
+          FROM session_usage u
+          JOIN sessions s ON s.session_id = u.session_id
+          JOIN run_repositories rr ON rr.run_id = s.run_id
+          WHERE rr.repo = ?1`,
       ),
       aggregateUsageGlobal: db.query<UsageAggregateDbRow, []>(
         `SELECT
@@ -1555,21 +1630,21 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            SUM(cache_read_input_tokens) AS cacheReadInputTokens,
            SUM(model_request_count) AS modelRequestCount,
            SUM(cost_usd) AS costUsd
-         FROM session_usage`,
+          FROM session_usage`,
       ),
       aggregateUsageByRepoAll: db.query<RepoUsageAggregateDbRow, []>(
         `SELECT
-           r.repo AS repo,
+           rr.repo AS repo,
            SUM(u.input_tokens) AS inputTokens,
            SUM(u.output_tokens) AS outputTokens,
            SUM(u.cache_creation_input_tokens) AS cacheCreationInputTokens,
            SUM(u.cache_read_input_tokens) AS cacheReadInputTokens,
            SUM(u.model_request_count) AS modelRequestCount,
            SUM(u.cost_usd) AS costUsd
-         FROM session_usage u
-         JOIN sessions s ON s.session_id = u.session_id
-         JOIN runs r ON r.run_id = s.run_id
-         GROUP BY r.repo`,
+          FROM session_usage u
+          JOIN sessions s ON s.session_id = u.session_id
+          JOIN run_repositories rr ON rr.run_id = s.run_id
+          GROUP BY rr.repo`,
       ),
       aggregateUsageByAllRuns: db.query<RunUsageAggregateDbRow, []>(
         `SELECT
@@ -1584,6 +1659,33 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
          JOIN sessions s ON s.session_id = u.session_id
          GROUP BY s.run_id`,
       ),
+      deleteRunRepositoriesByRun: db.query("DELETE FROM run_repositories WHERE run_id = ?1"),
+      getRunRepositoriesByRun: db.query<RunRepositoryRow, [string]>(
+        `SELECT
+           repo,
+           role,
+           base_branch AS baseBranch,
+           branch,
+           mount_path AS mountPath
+         FROM run_repositories
+         WHERE run_id = ?1
+         ORDER BY CASE role WHEN 'primary' THEN 0 ELSE 1 END, repo ASC`,
+      ),
+      insertRunRepository: db.query(
+        `INSERT INTO run_repositories (
+           run_id,
+           repo,
+           role,
+           base_branch,
+           branch,
+           mount_path
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(run_id, repo) DO UPDATE SET
+           role = excluded.role,
+           base_branch = excluded.base_branch,
+           branch = excluded.branch,
+           mount_path = excluded.mount_path`,
+      ),
       insertSubIssue: db.query(
         `INSERT INTO sub_issues (
            run_id,
@@ -1594,12 +1696,16 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
       ),
       listRepositories: db.query<RepositorySummaryRow>(
         `SELECT
-           repo,
-           COUNT(*) AS runCount,
-           MAX(started_at) AS lastRunAt
-         FROM runs
-           GROUP BY repo
-           ORDER BY MAX(started_at) DESC`,
+           registered_repositories.repo AS repo,
+           COUNT(DISTINCT runs.run_id) AS runCount,
+           MAX(runs.started_at) AS lastRunAt
+         FROM registered_repositories
+         LEFT JOIN run_repositories
+           ON run_repositories.repo = registered_repositories.repo
+         LEFT JOIN runs
+           ON runs.run_id = run_repositories.run_id
+         GROUP BY registered_repositories.repo
+         ORDER BY MAX(runs.started_at) DESC, registered_repositories.repo ASC`,
       ),
       listRuns: db.query<RunSummaryRow, [number]>(
         `SELECT
@@ -1633,10 +1739,12 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            origin_identifier AS originIdentifier,
            origin_url AS originUrl,
            origin_title AS originTitle
-         FROM runs
-         WHERE repo = ?1
-         ORDER BY started_at DESC
-         LIMIT ?2`,
+          FROM runs
+          WHERE run_id IN (
+            SELECT run_id FROM run_repositories WHERE repo = ?1
+          )
+          ORDER BY started_at DESC
+          LIMIT ?2`,
       ),
       listRunsByStatus: db.query<RunSummaryRow, [RunStatus, number]>(
         `SELECT
@@ -1671,11 +1779,13 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            origin_identifier AS originIdentifier,
            origin_url AS originUrl,
            origin_title AS originTitle
-         FROM runs
-         WHERE status = ?1
-           AND repo = ?2
-          ORDER BY started_at DESC
-          LIMIT ?3`,
+          FROM runs
+          WHERE status = ?1
+            AND run_id IN (
+              SELECT run_id FROM run_repositories WHERE repo = ?2
+            )
+           ORDER BY started_at DESC
+           LIMIT ?3`,
       ),
       listRunEvents: db.query<RunEventRow, [string, number]>(
         `SELECT
@@ -2052,6 +2162,52 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
            processed_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       ),
+      deleteRegisteredRepository: db.query("DELETE FROM registered_repositories WHERE repo = ?1"),
+      getRegisteredRepository: db.query<RegisteredRepositoryRow, [string]>(
+        `SELECT
+           repo,
+           enabled,
+           added_at AS addedAt,
+           updated_at AS updatedAt
+         FROM registered_repositories
+         WHERE repo = ?1`,
+      ),
+      listRegisteredRepositories: db.query<RegisteredRepositoryRow, []>(
+        `SELECT
+           repo,
+           enabled,
+           added_at AS addedAt,
+           updated_at AS updatedAt
+         FROM registered_repositories
+         ORDER BY repo ASC`,
+      ),
+      listEnabledRegisteredRepositories: db.query<RegisteredRepositoryRow, []>(
+        `SELECT
+           repo,
+           enabled,
+           added_at AS addedAt,
+           updated_at AS updatedAt
+         FROM registered_repositories
+         WHERE enabled = 1
+         ORDER BY repo ASC`,
+      ),
+      setRegisteredRepositoryEnabled: db.query(
+        `UPDATE registered_repositories
+         SET enabled = ?1,
+             updated_at = ?2
+         WHERE repo = ?3`,
+      ),
+      upsertRegisteredRepository: db.query(
+        `INSERT INTO registered_repositories (
+           repo,
+           enabled,
+           added_at,
+           updated_at
+         ) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(repo) DO UPDATE SET
+           enabled = excluded.enabled,
+           updated_at = excluded.updated_at`,
+      ),
       deletePolledRepository: db.query("DELETE FROM polled_repositories WHERE repo = ?1"),
       getPolledRepository: db.query<PolledRepositoryRow, [string]>(
         `SELECT
@@ -2406,6 +2562,26 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
         originFields.originUrl,
         originFields.originTitle,
       );
+
+      statements.deleteRunRepositoriesByRun.run(run.runId);
+      for (const repository of normalizedRunRepositories(run)) {
+        if (statements.getRegisteredRepository.get(repository.repo) == null) {
+          statements.upsertRegisteredRepository.run(
+            repository.repo,
+            1,
+            run.startedAt,
+            run.startedAt,
+          );
+        }
+        statements.insertRunRepository.run(
+          run.runId,
+          repository.repo,
+          repository.role,
+          repository.baseBranch ?? null,
+          repository.branch ?? null,
+          repository.mountPath ?? null,
+        );
+      }
 
       statements.deleteSubIssuesByRun.run(run.runId);
 
@@ -2815,6 +2991,9 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
   function hydrateRun(row: RunRow): RunState {
     const { statements } = getRuntime();
     const origin = hydrateRunOrigin(row);
+    const repositories = statements.getRunRepositoriesByRun
+      .all(row.runId)
+      .map((repoRow) => parseRunRepositoryRow(repoRow));
 
     return RunStateSchema.parse({
       branch: row.branch,
@@ -2823,6 +3002,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
       pid: row.pid ?? undefined,
       prUrl: row.prUrl ?? undefined,
       repo: row.repo,
+      ...(repositories.length > 1 ? { repositories } : {}),
       runId: row.runId,
       sessionIds: statements.getSessionIdsByRun
         .all(row.runId)
@@ -3606,6 +3786,56 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     return Number(row?.count ?? 0) > 0;
   }
 
+  function parseRegisteredRepositoryRow(row: RegisteredRepositoryRow): RegisteredRepository {
+    return RegisteredRepositorySchema.parse({
+      addedAt: row.addedAt,
+      enabled: Boolean(row.enabled),
+      repo: row.repo,
+      updatedAt: row.updatedAt,
+    });
+  }
+
+  function parseRunRepositoryRow(row: RunRepositoryRow): RunRepository {
+    return RunRepositorySchema.parse({
+      ...(row.baseBranch === null ? {} : { baseBranch: row.baseBranch }),
+      ...(row.branch === null ? {} : { branch: row.branch }),
+      ...(row.mountPath === null ? {} : { mountPath: row.mountPath }),
+      repo: row.repo,
+      role: row.role,
+    });
+  }
+
+  function normalizedRunRepositories(run: RunState): RunRepository[] {
+    const seen = new Set<string>();
+    const candidates =
+      run.repositories && run.repositories.length > 0
+        ? run.repositories
+        : [{ branch: run.branch, repo: run.repo, role: "primary" as const }];
+    const normalized: RunRepository[] = [];
+
+    for (const candidate of candidates) {
+      const parsed = RunRepositorySchema.parse({
+        ...candidate,
+        role: candidate.repo === run.repo ? "primary" : candidate.role,
+      });
+      if (seen.has(parsed.repo)) {
+        continue;
+      }
+      seen.add(parsed.repo);
+      normalized.push(parsed);
+    }
+
+    if (!seen.has(run.repo)) {
+      normalized.unshift(
+        RunRepositorySchema.parse({ branch: run.branch, repo: run.repo, role: "primary" }),
+      );
+    }
+
+    return normalized.map((repo) =>
+      repo.repo === run.repo ? { ...repo, role: RunRepositoryRoleSchema.parse("primary") } : repo,
+    );
+  }
+
   function parsePolledRepositoryRow(row: PolledRepositoryRow): PolledRepository {
     const repo = REPO_SCHEMA.parse(row.repo);
     if (typeof row.addedAt !== "string" || row.addedAt.length === 0) {
@@ -3623,9 +3853,59 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     };
   }
 
+  function addRegisteredRepository(repo: string): { added: boolean } {
+    const parsedRepo = REPO_SCHEMA.parse(repo);
+    const { statements } = getRuntime();
+    const existing = statements.getRegisteredRepository.get(parsedRepo);
+    if (existing != null) {
+      return { added: false };
+    }
+
+    const now = new Date().toISOString();
+    statements.upsertRegisteredRepository.run(parsedRepo, 1, now, now);
+    return { added: true };
+  }
+
+  function setRegisteredRepositoryEnabled(repo: string, enabled: boolean): { updated: boolean } {
+    const parsedRepo = REPO_SCHEMA.parse(repo);
+    const changes = readChanges(
+      getRuntime().statements.setRegisteredRepositoryEnabled.run(
+        enabled ? 1 : 0,
+        new Date().toISOString(),
+        parsedRepo,
+      ),
+    );
+
+    return { updated: changes > 0 };
+  }
+
+  function removeRegisteredRepository(repo: string): { removed: boolean } {
+    const parsedRepo = REPO_SCHEMA.parse(repo);
+    const changes = readChanges(getRuntime().statements.deleteRegisteredRepository.run(parsedRepo));
+    return { removed: changes > 0 };
+  }
+
+  function listRegisteredRepositories(
+    opts: { enabledOnly?: boolean } = {},
+  ): RegisteredRepository[] {
+    const { statements } = getRuntime();
+    const rows =
+      opts.enabledOnly === true
+        ? statements.listEnabledRegisteredRepositories.all()
+        : statements.listRegisteredRepositories.all();
+    return rows.map((row) => parseRegisteredRepositoryRow(row));
+  }
+
+  function getRegisteredRepository(repo: string): RegisteredRepository | null {
+    const parsedRepo = REPO_SCHEMA.parse(repo);
+    const row = getRuntime().statements.getRegisteredRepository.get(parsedRepo);
+    return row == null ? null : parseRegisteredRepositoryRow(row);
+  }
+
   function addPolledRepository(repo: string): { added: boolean } {
     const parsedRepo = REPO_SCHEMA.parse(repo);
     const { statements } = getRuntime();
+    addRegisteredRepository(parsedRepo);
     const existing = statements.getPolledRepository.get(parsedRepo);
     if (existing != null) {
       return { added: false };
@@ -4150,6 +4430,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     getRepoPromptRevision,
     getRepoPromptRevisions,
     getRepoUsageAggregate,
+    getRegisteredRepository,
     getRunById,
     getRunStatus,
     getRunsByRepo,
@@ -4159,6 +4440,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     getSessionUsagesByRun,
     getSystemSkillState,
     addPolledRepository,
+    addRegisteredRepository,
     getPolledRepository,
     getSubIssuesByRun,
     hasProcessedTriggerSource,
@@ -4171,14 +4453,17 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     insertSubIssue,
     listMcpServers,
     listPolledRepositories,
+    listRegisteredRepositories,
     listRepoChatMessages,
     listRepoChatRepositories,
     listRepoChatThreads,
     listRepositories,
     markTriggerSourceProcessed,
     removePolledRepository,
+    removeRegisteredRepository,
     setMcpServerEnabled,
     setPolledRepositoryEnabled,
+    setRegisteredRepositoryEnabled,
     listRepoEnvironmentOverrides,
     listRepoPromptOverrides,
     listRepoUsageAggregates,
