@@ -113,6 +113,9 @@ describe("buildParentPrompt", () => {
     );
     expect(prompt).toContain("stable `taskId` that is deterministic across reruns");
     expect(prompt).toContain(
+      "MUST NOT pass any `method`, `action`, `mode`, or similar create/update selector argument",
+    );
+    expect(prompt).toContain(
       "For each created/reused Linear child/sub-issue, delegate to the `github-issue-implementer` sub-agent",
     );
     expect(prompt).toContain("Linear child/sub-issue identifier or id");
