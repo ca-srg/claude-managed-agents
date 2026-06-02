@@ -1168,6 +1168,17 @@ describe("createRunApiRoutes", () => {
     expect(enqueuedInputs).toEqual([]);
   });
 
+  test("POST /api/runs rejects Linear issue payloads without a repo before enqueueing", async () => {
+    const { app, enqueuedInputs } = createFakeHarness();
+    const payload = await expectSchemaError(app, {
+      linearIssue: "ENG-123",
+      origin: "linear_issue",
+    });
+
+    expect(payload.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
+    expect(enqueuedInputs).toEqual([]);
+  });
+
   test("POST /api/runs rejects bodies missing issue", async () => {
     const { app, enqueuedInputs } = createFakeHarness();
     const payload = await expectSchemaError(app, { repo: "acme/widgets" });

@@ -279,6 +279,23 @@ async function startDryRun(handle: ServerHandle, config: DryRunConfig): Promise<
   return parsed.runId;
 }
 
+async function registerRepository(handle: ServerHandle, config: DryRunConfig): Promise<void> {
+  const form = new URLSearchParams();
+  form.set("repo", config.repo);
+
+  const response = await fetch(`${handle.baseUrl}/repositories`, {
+    body: form,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+    redirect: "manual",
+  });
+  const body = await response.text();
+
+  if (response.status !== 302 && response.status !== 303) {
+    throw new Error(`POST /repositories failed (${response.status}): ${body}`);
+  }
+}
+
 function parseSseFrame(frame: string): SseEvent | null {
   let event = "message";
   let id: string | undefined;
@@ -404,6 +421,7 @@ export async function main(env: Env): Promise<number> {
   let handle: ServerHandle | undefined;
   try {
     handle = await spawnServer(config);
+    await registerRepository(handle, config);
     const runId = await startDryRun(handle, config);
     const payload = await waitForCompleteEvent(handle, runId, config.timeoutMs);
     process.stdout.write(`DECOMPOSITION_PLAN=${JSON.stringify(payload.decompositionPlan)}\n`);

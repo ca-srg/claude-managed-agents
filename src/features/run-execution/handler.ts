@@ -1185,6 +1185,7 @@ export async function runIssueOrchestration(
       );
     }
     throwIfAborted(sessionController.signal);
+    const parentRepoPrompt = db.getRepoPrompt(repoSlug, "parent")?.body ?? null;
 
     runState = {
       ...(runState as RunState),
@@ -1267,7 +1268,7 @@ export async function runIssueOrchestration(
       repoContext,
       repoName,
       repoOwner: owner,
-      repoPrompt: null,
+      repoPrompt: parentRepoPrompt,
     });
 
     await anthropicClient.beta.sessions.events.send(parentSession.id, {

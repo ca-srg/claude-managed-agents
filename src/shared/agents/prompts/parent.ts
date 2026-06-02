@@ -222,7 +222,7 @@ function renderWorkspaceRepositoriesSection(
   const rows = repositories
     .map((repository) => {
       const repo = `${repository.repoOwner}/${repository.repoName}`;
-      const checkout = `git -C ${repository.mountPath} fetch && (git -C ${repository.mountPath} checkout -B ${branch} origin/${branch} || git -C ${repository.mountPath} checkout -B ${branch} origin/${repository.baseBranch}) && git -C ${repository.mountPath} pull --ff-only origin ${branch} || true`;
+      const checkout = `git -C ${repository.mountPath} fetch && (git -C ${repository.mountPath} checkout -B ${branch} origin/${branch} || git -C ${repository.mountPath} checkout -B ${branch} origin/${repository.baseBranch}) && (git -C ${repository.mountPath} pull --ff-only origin ${branch} || true)`;
       return `- ${repo} (${repository.role})\n  - mount: ${repository.mountPath}\n  - base: ${repository.baseBranch}\n  - checkout-first: \`${checkout}\``;
     })
     .join("\n");

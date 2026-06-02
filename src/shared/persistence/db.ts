@@ -1620,7 +1620,8 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
           FROM session_usage u
           JOIN sessions s ON s.session_id = u.session_id
           JOIN run_repositories rr ON rr.run_id = s.run_id
-          WHERE rr.repo = ?1`,
+          WHERE rr.repo = ?1
+            AND rr.role = 'primary'`,
       ),
       aggregateUsageGlobal: db.query<UsageAggregateDbRow, []>(
         `SELECT
@@ -1644,6 +1645,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
           FROM session_usage u
           JOIN sessions s ON s.session_id = u.session_id
           JOIN run_repositories rr ON rr.run_id = s.run_id
+          WHERE rr.role = 'primary'
           GROUP BY rr.repo`,
       ),
       aggregateUsageByAllRuns: db.query<RunUsageAggregateDbRow, []>(
@@ -3858,6 +3860,9 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     const { statements } = getRuntime();
     const existing = statements.getRegisteredRepository.get(parsedRepo);
     if (existing != null) {
+      if (!existing.enabled) {
+        statements.setRegisteredRepositoryEnabled.run(1, new Date().toISOString(), parsedRepo);
+      }
       return { added: false };
     }
 

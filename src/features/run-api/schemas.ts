@@ -112,6 +112,25 @@ const SchemaErrorOutputSchema = z
   .strict()
   .describe("Error response returned when request validation fails.");
 
+const RunTargetResolutionErrorSchema = z
+  .object({
+    message: NonEmptyStringSchema.describe("Human-readable run target resolution error message."),
+    type: z
+      .literal("run_target_resolution")
+      .describe("Stable error type for run target resolution failures."),
+  })
+  .strict()
+  .describe("Structured error returned when registered repositories cannot resolve a run target.");
+
+const RunTargetResolutionErrorOutputSchema = z
+  .object({
+    error: RunTargetResolutionErrorSchema.describe(
+      "Structured error returned when run target resolution fails.",
+    ),
+  })
+  .strict()
+  .describe("Error response returned when run target resolution fails.");
+
 const RunNotFoundErrorSchema = z
   .object({
     message: z.literal("run not found").describe("Human-readable not-found message."),
@@ -188,6 +207,11 @@ const RunStartBaseSchema = {
     .describe("Optional existing Anthropic vault id to reuse for the run."),
 };
 
+const RequiredRepoRunStartBaseSchema = {
+  ...RunStartBaseSchema,
+  repo: RepoSlugSchema.describe("Required primary GitHub repository slug for Linear-origin runs."),
+};
+
 const GitHubIssueRunStartInputSchema = z
   .object({
     ...RunStartBaseSchema,
@@ -198,7 +222,7 @@ const GitHubIssueRunStartInputSchema = z
 
 const LinearIssueRunStartInputSchema = z
   .object({
-    ...RunStartBaseSchema,
+    ...RequiredRepoRunStartBaseSchema,
     linearIssue: TrimmedNonEmptyStringSchema.describe("Linear issue identifier or URL to run."),
     origin: z.literal("linear_issue").describe("Run origin type."),
   })
@@ -267,7 +291,11 @@ export type RunStartInput = z.infer<typeof RunStartInputSchema>;
 export { RunOriginTypeSchema };
 
 export const RunStartOutputSchema = z
-  .union([RunStartSuccessOutputSchema, SchemaErrorOutputSchema])
+  .union([
+    RunStartSuccessOutputSchema,
+    SchemaErrorOutputSchema,
+    RunTargetResolutionErrorOutputSchema,
+  ])
   .describe("Response body returned after attempting to start a managed run.");
 export type RunStartOutput = z.infer<typeof RunStartOutputSchema>;
 

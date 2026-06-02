@@ -120,6 +120,9 @@ function resolveRunStartRepositories(
   }
 
   let primaryRepo = input.repo;
+  if (input.origin === "linear_issue" && primaryRepo === undefined) {
+    throw new Error("Linear issue runs require an explicit primary repository");
+  }
   if (input.origin === "github_issue" && primaryRepo === undefined) {
     if (targetRepos.length !== 1) {
       throw new Error(

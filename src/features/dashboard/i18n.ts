@@ -157,6 +157,12 @@ const JA_TRANSLATIONS: Record<string, string> = {
   "GitHub Issue Number": "GitHub Issue 番号",
   "Linear Issue": "Linear Issue",
   "Required when Linear is selected.": "Linear を選択した場合に必須です。",
+  "Primary repository": "主リポジトリ",
+  "Choose a repository": "リポジトリを選択",
+  "Select the registered repository that owns the Linear run.":
+    "Linear 実行の対象となる登録済みリポジトリを選択してください。",
+  "No enabled repositories are registered. Register a repository before starting a Linear run.":
+    "有効な登録済みリポジトリがありません。Linear 実行を開始する前にリポジトリを登録してください。",
   "Use a GitHub issue URL when multiple repositories are registered.":
     "複数のリポジトリが登録されている場合は GitHub issue URL を指定してください。",
   "Vault ID": "Vault ID",

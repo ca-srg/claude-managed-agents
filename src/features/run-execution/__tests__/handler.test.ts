@@ -608,6 +608,49 @@ describe("runIssueOrchestration", () => {
     expect(sentContent.text).toContain("CLAUDE.md: Use Bun and Biome.");
   });
 
+  test("primary repository parent prompt override is included in the parent prompt", async () => {
+    const repoPrompt = "Use the repo-specific parent instructions.";
+    const harness = createHarness({
+      buildParentPrompt: ((args) =>
+        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompt ?? ""}`) as RunExecutionDeps["buildParentPrompt"],
+    });
+    const db = harness.deps.db;
+    if (db === undefined) {
+      throw new Error("expected mock DB");
+    }
+    harness.deps.db = {
+      ...db,
+      getRepoPrompt: (repo, agent) => {
+        expect(repo).toBe("owner/name");
+        expect(agent).toBe("parent");
+        return {
+          agent,
+          body: repoPrompt,
+          currentRevisionId: 1,
+          repo,
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        };
+      },
+    };
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-repo-parent-prompt" },
+      harness.deps,
+    );
+
+    const sentEvent = harness.fakeAnthropic.calls.sends[0]?.params.events?.[0];
+    if (sentEvent?.type !== "user.message") {
+      throw new Error("expected parent prompt user message event");
+    }
+    const sentContent = sentEvent.content[0];
+    if (sentContent?.type !== "text") {
+      throw new Error("expected parent prompt text event");
+    }
+
+    expect(result.status).toBe("completed");
+    expect(sentContent.text).toContain(repoPrompt);
+  });
+
   test("parent session checks out the base branch, not the not-yet-created work branch", async () => {
     const harness = createHarness();
 

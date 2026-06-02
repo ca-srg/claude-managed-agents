@@ -181,14 +181,12 @@ const UsageMetric: FC<{ label: string; value: string; tone?: "default" | "strong
 
 const RepoCard: FC<{ repo: Repository; delayMs: number }> = ({ repo, delayMs }) => {
   const [owner, name] = repo.repo.split("/");
-  const href = `https://github.com/${repo.repo}`;
+  const href = `/repos/${owner}/${name}`;
   const tokenVolume = totalTokenVolume(repo.usage);
   const showUsage = repo.usage.costUsd > 0;
   return (
     <a
       href={href}
-      target="_blank"
-      rel="noopener noreferrer"
       class="group block p-6 bg-surface border border-neutral-200 rounded-xl hover:border-brand-500 hover:shadow-md transition-all duration-200 animate-fade-in-up"
       style={`animation-delay: ${delayMs}ms; animation-fill-mode: both;`}
     >

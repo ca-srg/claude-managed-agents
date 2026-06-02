@@ -97,6 +97,21 @@ describe("RunStartInputSchema", () => {
     );
   });
 
+  test("rejects Linear issue start payloads without an explicit repo", () => {
+    const parseOutcome = RunStartInputSchema.safeParse({
+      linearIssue: "ENG-123",
+      origin: "linear_issue",
+    });
+
+    expect(parseOutcome.success).toBe(false);
+
+    if (parseOutcome.success) {
+      throw new Error("Expected schema parse to fail");
+    }
+
+    expect(parseOutcome.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
+  });
+
   test("rejects non-positive issue numbers and invalid repo slugs", () => {
     const parseOutcome = RunStartInputSchema.safeParse({ issue: 0, repo: "invalid" });
 
@@ -177,6 +192,14 @@ describe("run-api output schemas", () => {
     expect(
       RunStartOutputSchema.safeParse({
         error: { issues: [], message: "invalid request body", type: "schema" },
+      }).success,
+    ).toBe(true);
+    expect(
+      RunStartOutputSchema.safeParse({
+        error: {
+          message: "At least one enabled repository must be registered before starting a run",
+          type: "run_target_resolution",
+        },
       }).success,
     ).toBe(true);
     expect(RunStopOutputSchema.safeParse({ runId: "run-1", stopped: true }).success).toBe(true);

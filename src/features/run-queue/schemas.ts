@@ -13,6 +13,11 @@ const BaseRunStartInputSchema = {
   vaultId: z.string().min(1).optional(),
 };
 
+const RequiredRepoRunStartInputSchema = {
+  ...BaseRunStartInputSchema,
+  repo: z.string().regex(/^[^/]+\/[^/]+$/, "repo must match owner/name"),
+};
+
 const GitHubIssueRunStartInputSchema = z
   .object({
     ...BaseRunStartInputSchema,
@@ -23,7 +28,7 @@ const GitHubIssueRunStartInputSchema = z
 
 const LinearIssueRunStartInputSchema = z
   .object({
-    ...BaseRunStartInputSchema,
+    ...RequiredRepoRunStartInputSchema,
     linearIssue: z.string().min(1),
     origin: z.literal("linear_issue"),
   })

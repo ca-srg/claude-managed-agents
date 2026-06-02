@@ -35,7 +35,7 @@ describe("buildParentPrompt", () => {
       "git -C /workspace/claude-managed-agents fetch && (git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/main)",
     );
     expect(prompt).toContain(
-      "git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true",
+      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
     );
     expect(prompt).toContain("Commit style = conventional");
     expect(prompt).toContain(
@@ -84,6 +84,21 @@ describe("buildParentPrompt", () => {
     expect(prompt).not.toContain("{authorName}");
     expect(prompt).not.toContain("{authorEmail}");
     expect(prompt).not.toContain("{baseBranch}");
+  });
+
+  it("scopes checkout-first failure tolerance to pull only", () => {
+    const prompt = buildParentPrompt(defaultParams);
+    const checkoutCommand = prompt.match(/checkout-first: `([^`]+)`/)?.[1];
+
+    expect(checkoutCommand).toBeDefined();
+    expect(checkoutCommand).toContain("git -C /workspace/claude-managed-agents fetch &&");
+    expect(checkoutCommand).toContain(
+      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
+    );
+    expect(checkoutCommand).not.toContain(
+      "origin/main) && git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true",
+    );
+    expect(checkoutCommand?.endsWith("|| true)")).toBe(true);
   });
 
   it("instructs Linear-origin runs to create or reuse Linear sub-issues before delegation", () => {

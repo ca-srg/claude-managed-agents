@@ -8,6 +8,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 import { type CreateAppOptions, createApp } from "@/features/dashboard/server";
 import type { RepositoryChatAnthropicClient } from "@/features/repo-chat/handler";
+import { LINEAR_MCP_URL } from "@/shared/constants";
 import { createDbModule } from "@/shared/persistence/db";
 import type { SessionClient, SessionResult } from "@/shared/session";
 import type { RunState } from "@/shared/types";
@@ -235,7 +236,7 @@ describe("createApp", () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
-    expect(body).toContain('href="https://github.com/acme/widgets"');
+    expect(body).toContain('href="/repos/acme/widgets"');
   });
 
   test("GET / returns empty state when no runs exist", async () => {
@@ -259,7 +260,7 @@ describe("createApp", () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain("<!doctype html>");
-    expect(body).toContain('href="https://github.com/acme/widgets"');
+    expect(body).toContain('href="/repos/acme/widgets"');
   });
 
   test("GET /runs returns 200 HTML containing all runs", async () => {
@@ -750,6 +751,29 @@ describe("createApp", () => {
     expect(body).toContain('name="configPath"');
   });
 
+  test("GET /runs/new shows a Linear primary repository selector when Linear MCP is enabled", async () => {
+    const { app } = createAppWithSeededDb((db) => {
+      db.addRegisteredRepository("acme/widgets");
+      db.addRegisteredRepository("acme/disabled");
+      db.setRegisteredRepositoryEnabled("acme/disabled", false);
+      db.createMcpServer({
+        name: "linear",
+        tokenEnvName: "LINEAR_TOKEN",
+        url: LINEAR_MCP_URL,
+      });
+    });
+
+    const response = await app.request("/runs/new");
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toContain('name="origin"');
+    expect(body).toContain('name="repo"');
+    expect(body).toContain("Primary repository");
+    expect(body).toContain('<option value="acme/widgets"');
+    expect(body).not.toContain('<option value="acme/disabled"');
+  });
+
   test("POST /runs/new with valid body redirects to /runs/:id/live", async () => {
     const { app } = createAppWithSeededDb(undefined, {
       runQueue: {
@@ -772,6 +796,53 @@ describe("createApp", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("Location")).toBe("/runs/run-new-1/live");
+  });
+
+  test("POST /runs/new passes selected Linear primary repo to runQueue", async () => {
+    const enqueued: unknown[] = [];
+    const { app } = createAppWithSeededDb(
+      (db) => {
+        db.addRegisteredRepository("acme/widgets");
+        db.createMcpServer({
+          name: "linear",
+          tokenEnvName: "LINEAR_TOKEN",
+          url: LINEAR_MCP_URL,
+        });
+      },
+      {
+        runQueue: {
+          enqueue: (input) => {
+            enqueued.push(input);
+            return { position: 1, runId: "run-linear-new" };
+          },
+        },
+      },
+    );
+
+    const formData = new URLSearchParams();
+    formData.append("origin", "linear_issue");
+    formData.append("linearIssue", "ENG-123");
+    formData.append("repo", "acme/widgets");
+
+    const response = await app.request("/runs/new", {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/runs/run-linear-new/live");
+    expect(enqueued).toEqual([
+      {
+        dryRun: false,
+        linearIssue: "ENG-123",
+        origin: "linear_issue",
+        repo: "acme/widgets",
+      },
+    ]);
   });
 
   test("POST /runs/new with invalid body returns 400 with inline error", async () => {
@@ -1376,7 +1447,7 @@ describe("createApp", () => {
     const body = await response.text();
 
     expect(response.status).toBe(200);
-    expect(body).toContain('href="https://github.com/acme/freshly-watched"');
+    expect(body).toContain('href="/repos/acme/freshly-watched"');
     expect(body).toContain("polled");
   });
 

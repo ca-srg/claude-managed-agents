@@ -221,6 +221,32 @@ describe("createRunQueueModule", () => {
     await waitFor(() => getDbStatus(db, run.runId) === "completed", "completed status in DB");
   });
 
+  test("Linear-origin enqueue requires an explicit primary repository", () => {
+    const db = createDbModule(":memory:");
+    db.addRegisteredRepository("acme/widgets");
+    db.addRegisteredRepository("acme/api");
+    openDbs.push(db);
+    const runEvents = createRunEventsModule({ db });
+    const queue = createRunQueueModule({
+      db,
+      executor: async (input) => ({
+        aborted: false,
+        runId: input.runId,
+        status: "completed",
+        timedOut: false,
+      }),
+      runEvents,
+    });
+
+    expect(() =>
+      queue.enqueue({
+        linearIssue: "ENG-123",
+        origin: "linear_issue",
+      } as RunStartInput),
+    ).toThrow(/repo|primary repository/i);
+    expect(db.listRuns({ limit: 10 })).toEqual([]);
+  });
+
   test("successful executor emits one enriched complete payload with prUrl", async () => {
     const prUrl = "https://github.com/acme/widgets/pull/7";
     const { db, queue } = createHarness(async (input) => ({

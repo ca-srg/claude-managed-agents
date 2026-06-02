@@ -446,6 +446,10 @@ function linearMcpEnabled(db: DbModule): boolean {
   return hasEnabledLinearMcpServer(db.listMcpServers());
 }
 
+function enabledRegisteredRepositorySlugs(db: DbModule): string[] {
+  return db.listRegisteredRepositories({ enabledOnly: true }).map((repository) => repository.repo);
+}
+
 function getMcpServersNotice(notice: string | undefined): McpServersPageProps["notice"] {
   switch (notice) {
     case "added":
@@ -2081,23 +2085,27 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
   app.get("/favicon.ico", (c) => c.body(null, 204));
 
   app.get("/runs/new", (c) => {
+    const enabledRepositories = enabledRegisteredRepositorySlugs(db);
     return htmlPage(c, () =>
       RunNewPage({
+        enabledRepositories,
         linearMcpEnabled: linearMcpEnabled(db),
-        registeredRepositoryCount: db.listRegisteredRepositories({ enabledOnly: true }).length,
+        registeredRepositoryCount: enabledRepositories.length,
       }),
     );
   });
 
   app.post("/runs/new", async (c) => {
     if (!opts.runQueue) {
+      const enabledRepositories = enabledRegisteredRepositorySlugs(db);
       return htmlPage(
         c,
         () =>
           RunNewPage({
+            enabledRepositories,
             errors: { _form: "runQueue is not configured for this dashboard" },
             linearMcpEnabled: linearMcpEnabled(db),
-            registeredRepositoryCount: db.listRegisteredRepositories({ enabledOnly: true }).length,
+            registeredRepositoryCount: enabledRepositories.length,
           }),
         503,
       );
@@ -2108,13 +2116,15 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
     const origin = linearEnabled ? String(form.origin ?? "github_issue") : "github_issue";
     const issue = String(form.issue ?? "").trim();
     const linearIssue = String(form.linearIssue ?? "").trim();
+    const repo = String(form.repo ?? "").trim();
     const dryRun = form.dryRun === "on";
     const vaultId = form.vaultId ? String(form.vaultId) : undefined;
     const configPath = form.configPath ? String(form.configPath) : undefined;
+    const enabledRepositories = enabledRegisteredRepositorySlugs(db);
 
     const parsed = RunStartInputSchema.safeParse({
       ...(origin === "github_issue" ? { issue } : {}),
-      ...(origin === "linear_issue" ? { linearIssue } : {}),
+      ...(origin === "linear_issue" ? { linearIssue, repo } : {}),
       origin,
       dryRun,
       vaultId,
@@ -2132,17 +2142,19 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
         c,
         () =>
           RunNewPage({
+            enabledRepositories,
             values: {
               issue: form.issue as string,
               linearIssue: form.linearIssue as string,
               origin: origin === "linear_issue" ? "linear_issue" : "github_issue",
+              repo: form.repo as string,
               dryRun,
               vaultId: form.vaultId as string,
               configPath: form.configPath as string,
             },
             errors,
             linearMcpEnabled: linearEnabled,
-            registeredRepositoryCount: db.listRegisteredRepositories({ enabledOnly: true }).length,
+            registeredRepositoryCount: enabledRepositories.length,
           }),
         400,
       );
@@ -2156,17 +2168,19 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
         c,
         () =>
           RunNewPage({
+            enabledRepositories,
             values: {
               issue: form.issue as string,
               linearIssue: form.linearIssue as string,
               origin: origin === "linear_issue" ? "linear_issue" : "github_issue",
+              repo: form.repo as string,
               dryRun,
               vaultId: form.vaultId as string,
               configPath: form.configPath as string,
             },
             errors: { _form: error instanceof Error ? error.message : String(error) },
             linearMcpEnabled: linearEnabled,
-            registeredRepositoryCount: db.listRegisteredRepositories({ enabledOnly: true }).length,
+            registeredRepositoryCount: enabledRepositories.length,
           }),
         400,
       );
