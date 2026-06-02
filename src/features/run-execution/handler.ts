@@ -1120,7 +1120,14 @@ export async function runIssueOrchestration(
       resources: [
         {
           authorization_token: githubAccess.authorizationToken,
-          checkout: { name: branch, type: "branch" },
+          // Check out the base branch, NOT the agent work branch. The work
+          // branch does not exist on the remote yet at session-start time; the
+          // parent/child agents create it inside the session via
+          // `git checkout -B ${branch} origin/${branch} || ... origin/${baseBranch}`.
+          // Pointing the initial checkout at the (not-yet-pushed) work branch
+          // races branch creation and fails with "branch or commit not found".
+          // The base branch always exists, so this avoids the race entirely.
+          checkout: { name: baseBranch, type: "branch" },
           mount_path: `/workspace/${repoName}`,
           type: "github_repository",
           url: `https://github.com/${owner}/${repoName}`,

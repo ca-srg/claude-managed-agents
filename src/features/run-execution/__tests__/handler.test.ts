@@ -608,6 +608,29 @@ describe("runIssueOrchestration", () => {
     expect(sentContent.text).toContain("CLAUDE.md: Use Bun and Biome.");
   });
 
+  test("parent session checks out the base branch, not the not-yet-created work branch", async () => {
+    const harness = createHarness();
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-checkout-base" },
+      harness.deps,
+    );
+
+    expect(result.status).toBe("completed");
+
+    const resource = harness.fakeAnthropic.calls.creates[0]?.resources?.[0];
+    if (resource?.type !== "github_repository") {
+      throw new Error("expected a github_repository session resource");
+    }
+
+    // Regression guard: the work branch (agent/issue-42/fix-login-flow) does
+    // not exist on the remote at session-start time. Checking it out here
+    // races branch creation and fails with "branch or commit not found". The
+    // parent/child agents create the work branch from the base branch inside
+    // the session, so the initial checkout MUST target the base branch.
+    expect(resource.checkout).toEqual({ name: "main", type: "branch" });
+  });
+
   test("repo context loading failure does not abort the run", async () => {
     let loadCalls = 0;
     const harness = createHarness({
