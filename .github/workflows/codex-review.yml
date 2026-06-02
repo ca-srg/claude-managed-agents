@@ -18,8 +18,9 @@ jobs:
   request-review:
     name: Request Codex review
     runs-on: ubuntu-latest
-    # Skip drafts, forked-PR heads (GITHUB_TOKEN is read-only on forks and cannot
-    # comment), and bot-authored PRs (avoid review noise and @codex feedback loops).
+    # Skip drafts, forked-PR heads (secrets such as PAT are not exposed to fork
+    # PRs, so the comment step cannot authenticate), and bot-authored PRs (avoid
+    # review noise and @codex feedback loops).
     if: >-
       ${{
         github.event.pull_request.draft == false &&
@@ -29,7 +30,7 @@ jobs:
     steps:
       - name: Comment "@codex review"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh pr comment "$PR_NUMBER" --body "@codex review"
