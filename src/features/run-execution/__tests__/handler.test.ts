@@ -612,7 +612,7 @@ describe("runIssueOrchestration", () => {
     const repoPrompt = "Use the repo-specific parent instructions.";
     const harness = createHarness({
       buildParentPrompt: ((args) =>
-        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompt ?? ""}`) as RunExecutionDeps["buildParentPrompt"],
+        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompts?.[0]?.repoPrompt ?? ""}`) as RunExecutionDeps["buildParentPrompt"],
     });
     const db = harness.deps.db;
     if (db === undefined) {
@@ -649,6 +649,77 @@ describe("runIssueOrchestration", () => {
 
     expect(result.status).toBe("completed");
     expect(sentContent.text).toContain(repoPrompt);
+  });
+
+  test("multi-repo parent prompt overrides are loaded for all targets", async () => {
+    const githubAccess = {
+      authMode: "app",
+      authorizationToken: "test_multi_repo_prompt_token",
+      installationId: 12345,
+      octokit: { token: "test_multi_repo_prompt_token" },
+      permissions: {
+        contents: "write",
+        issues: "write",
+        pull_requests: "write",
+      },
+      repositorySelection: "selected",
+    };
+    const getRepoPromptCalls: Array<{ agent: string; repo: string }> = [];
+    const harness = createHarness({
+      buildParentPrompt: ((args) =>
+        `Parent prompt for #${args.parentIssueNumber}\n${args.repoPrompts
+          ?.map((entry) => `${entry.repoOwner}/${entry.repoName}: ${entry.repoPrompt ?? ""}`)
+          .join("\n")}`) as RunExecutionDeps["buildParentPrompt"],
+      githubAuth: {
+        resolveRepositoriesAccess: async () => githubAccess,
+        resolveRepositoryAccess: async () => githubAccess,
+      } as unknown as RunExecutionDeps["githubAuth"],
+    });
+    const db = harness.deps.db;
+    if (db === undefined) {
+      throw new Error("expected mock DB");
+    }
+    harness.deps.db = {
+      ...db,
+      getRepoPrompt: (repo, agent) => {
+        getRepoPromptCalls.push({ agent, repo });
+        return {
+          agent,
+          body: `${repo} parent override`,
+          currentRevisionId: 1,
+          repo,
+          updatedAt: "2026-04-28T00:00:00.000Z",
+        };
+      },
+    };
+
+    const result = await runIssueOrchestration(
+      {
+        dryRun: false,
+        issue: 42,
+        repo: "owner/name",
+        repositories: ["owner/api"],
+        runId: "run-multi-repo-parent-prompts",
+      },
+      harness.deps,
+    );
+
+    const sentEvent = harness.fakeAnthropic.calls.sends[0]?.params.events?.[0];
+    if (sentEvent?.type !== "user.message") {
+      throw new Error("expected parent prompt user message event");
+    }
+    const sentContent = sentEvent.content[0];
+    if (sentContent?.type !== "text") {
+      throw new Error("expected parent prompt text event");
+    }
+
+    expect(result.status).toBe("completed");
+    expect(getRepoPromptCalls).toEqual([
+      { agent: "parent", repo: "owner/name" },
+      { agent: "parent", repo: "owner/api" },
+    ]);
+    expect(sentContent.text).toContain("owner/name parent override");
+    expect(sentContent.text).toContain("owner/api parent override");
   });
 
   test("parent session checks out the base branch, not the not-yet-created work branch", async () => {

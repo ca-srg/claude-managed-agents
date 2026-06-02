@@ -26,8 +26,21 @@ export type BuildParentPromptParams = {
    * additional section. The body is passed through verbatim. When omitted or
    * blank, no extra section is rendered (preserving byte-identical output for
    * repositories without an override).
+   *
+   * @deprecated Prefer `repoPrompts` for multi-repository runs. This remains as
+   * a fallback for callers that only pass the primary repository override.
    */
   repoPrompt?: string | null;
+  /**
+   * Repository-specific instructions for all repositories mounted in the run.
+   * Each non-blank body is rendered under a repository-scoped heading before
+   * repository context. When provided, this takes precedence over `repoPrompt`.
+   */
+  repoPrompts?: Array<{
+    repoName: string;
+    repoOwner: string;
+    repoPrompt?: string | null;
+  }>;
   /**
    * Repository-level context loaded from files in the target repository before
    * session start. The preformatted body is appended after any DB-backed repo
@@ -53,6 +66,7 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
     branch,
     baseBranch,
     repoPrompt,
+    repoPrompts,
     repoContext,
   } = params;
 
@@ -108,10 +122,20 @@ export function buildParentPrompt(params: BuildParentPromptParams): string {
           repoOwner,
         });
 
-  const sections = [
-    renderRepoPromptSection(repoOwner, repoName, repoPrompt),
-    renderRepoContextSection(repoContext),
-  ].filter((section): section is string => section !== null);
+  const repoPromptSections = (
+    repoPrompts === undefined
+      ? [renderRepoPromptSection(repoOwner, repoName, repoPrompt)]
+      : repoPrompts.map((repoPromptEntry) =>
+          renderRepoPromptSection(
+            repoPromptEntry.repoOwner,
+            repoPromptEntry.repoName,
+            repoPromptEntry.repoPrompt,
+          ),
+        )
+  ).filter((section): section is string => section !== null);
+  const sections = [...repoPromptSections, renderRepoContextSection(repoContext)].filter(
+    (section): section is string => section !== null,
+  );
   return sections.length === 0 ? basePrompt : `${basePrompt}\n\n${sections.join("\n\n")}`;
 }
 

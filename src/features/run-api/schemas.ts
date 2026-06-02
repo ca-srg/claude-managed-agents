@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   RunEventSchema,
+  RunRepositorySchema,
   RunStatusSchema,
   RunSummarySchema,
   SubIssueSchema,
@@ -34,6 +35,28 @@ const DescribedRunSummarySchema = RunSummarySchema.extend({
   phase: RunSummarySchema.shape.phase.describe("Current orchestration phase for the run."),
   prUrl: RunSummarySchema.shape.prUrl.describe("Pull request URL produced by the run."),
   repo: RunSummarySchema.shape.repo.describe("GitHub repository slug for the run."),
+  repositories: z
+    .array(
+      RunRepositorySchema.extend({
+        baseBranch: RunRepositorySchema.shape.baseBranch.describe(
+          "Base branch checked out for this repository.",
+        ),
+        branch: RunRepositorySchema.shape.branch.describe(
+          "Git branch used by the managed run for this repository.",
+        ),
+        mountPath: RunRepositorySchema.shape.mountPath.describe(
+          "Workspace mount path for this repository.",
+        ),
+        repo: RunRepositorySchema.shape.repo.describe("GitHub repository slug for this target."),
+        role: RunRepositorySchema.shape.role.describe(
+          "Whether this repository is the primary tracking repo or a target repo.",
+        ),
+      })
+        .strict()
+        .describe("Resolved repository mounted for a managed run."),
+    )
+    .optional()
+    .describe("Resolved repositories mounted for the managed run."),
   runId: RunSummarySchema.shape.runId.describe("Stable identifier for the managed run."),
   startedAt: RunSummarySchema.shape.startedAt.describe("ISO timestamp when the run started."),
   status: RunSummarySchema.shape.status.describe("Current lifecycle status for the run."),
@@ -130,6 +153,21 @@ const RunTargetResolutionErrorOutputSchema = z
   })
   .strict()
   .describe("Error response returned when run target resolution fails.");
+
+const ServerErrorSchema = z
+  .object({
+    message: NonEmptyStringSchema.describe("Human-readable server error message."),
+    type: z.literal("server_error").describe("Stable error type for unexpected server failures."),
+  })
+  .strict()
+  .describe("Structured error returned when an unexpected server failure occurs.");
+
+const ServerErrorOutputSchema = z
+  .object({
+    error: ServerErrorSchema.describe("Structured error returned for unexpected server failures."),
+  })
+  .strict()
+  .describe("Error response returned when an unexpected server failure occurs.");
 
 const RunNotFoundErrorSchema = z
   .object({
@@ -247,8 +285,23 @@ function withDefaultRunOrigin(value: unknown): unknown {
   return {
     ...withOrigin,
     issue: normalizedIssue.issue,
-    repo: typeof withOrigin.repo === "string" ? withOrigin.repo : normalizedIssue.repo,
+    repo: normalizeGitHubIssueRepo(withOrigin.repo, normalizedIssue.repo),
   };
+}
+
+function normalizeGitHubIssueRepo(
+  explicitRepo: unknown,
+  issueUrlRepo: string | undefined,
+): unknown {
+  if (typeof explicitRepo !== "string") {
+    return issueUrlRepo;
+  }
+
+  if (issueUrlRepo !== undefined && explicitRepo !== issueUrlRepo) {
+    return "";
+  }
+
+  return explicitRepo;
 }
 
 function normalizeGitHubIssueRef(value: unknown): { issue: number; repo?: string } | null {
@@ -295,6 +348,7 @@ export const RunStartOutputSchema = z
     RunStartSuccessOutputSchema,
     SchemaErrorOutputSchema,
     RunTargetResolutionErrorOutputSchema,
+    ServerErrorOutputSchema,
   ])
   .describe("Response body returned after attempting to start a managed run.");
 export type RunStartOutput = z.infer<typeof RunStartOutputSchema>;

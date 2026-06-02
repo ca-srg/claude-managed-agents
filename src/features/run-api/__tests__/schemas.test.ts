@@ -39,6 +39,60 @@ describe("RunStartInputSchema", () => {
     });
   });
 
+  test("accepts GitHub issue URLs and adopts the URL repository", () => {
+    const parseOutcome = RunStartInputSchema.safeParse({
+      issue: "https://github.com/CyberAgentSRG/server/issues/21925",
+    });
+
+    expect(parseOutcome.success).toBe(true);
+
+    if (!parseOutcome.success) {
+      throw new Error("Expected schema parse to succeed");
+    }
+
+    expect(parseOutcome.data).toEqual({
+      dryRun: false,
+      issue: 21925,
+      origin: "github_issue",
+      repo: "CyberAgentSRG/server",
+    });
+  });
+
+  test("accepts GitHub issue URLs when the explicit repo matches", () => {
+    const parseOutcome = RunStartInputSchema.safeParse({
+      issue: "https://github.com/CyberAgentSRG/server/issues/21925",
+      repo: "CyberAgentSRG/server",
+    });
+
+    expect(parseOutcome.success).toBe(true);
+
+    if (!parseOutcome.success) {
+      throw new Error("Expected schema parse to succeed");
+    }
+
+    expect(parseOutcome.data).toEqual({
+      dryRun: false,
+      issue: 21925,
+      origin: "github_issue",
+      repo: "CyberAgentSRG/server",
+    });
+  });
+
+  test("rejects GitHub issue URLs when the explicit repo conflicts", () => {
+    const parseOutcome = RunStartInputSchema.safeParse({
+      issue: "https://github.com/CyberAgentSRG/server/issues/21925",
+      repo: "CyberAgentSRG/api",
+    });
+
+    expect(parseOutcome.success).toBe(false);
+
+    if (parseOutcome.success) {
+      throw new Error("Expected schema parse to fail");
+    }
+
+    expect(parseOutcome.error.issues).toContainEqual(expect.objectContaining({ path: ["repo"] }));
+  });
+
   test("accepts a Linear issue start payload", () => {
     const parseOutcome = RunStartInputSchema.safeParse({
       linearIssue: "ENG-123",
@@ -202,6 +256,14 @@ describe("run-api output schemas", () => {
         },
       }).success,
     ).toBe(true);
+    expect(
+      RunStartOutputSchema.safeParse({
+        error: {
+          message: "failed to enqueue run",
+          type: "server_error",
+        },
+      }).success,
+    ).toBe(true);
     expect(RunStopOutputSchema.safeParse({ runId: "run-1", stopped: true }).success).toBe(true);
     expect(
       RunStopOutputSchema.safeParse({
@@ -234,6 +296,22 @@ describe("run-api output schemas", () => {
     const runSummary = {
       issueNumber: 21925,
       repo: "CyberAgentSRG/server",
+      repositories: [
+        {
+          baseBranch: "main",
+          branch: "agent/issue-21925/fix-api",
+          mountPath: "/workspace/CyberAgentSRG__server",
+          repo: "CyberAgentSRG/server",
+          role: "primary",
+        },
+        {
+          baseBranch: "main",
+          branch: "agent/issue-21925/fix-api",
+          mountPath: "/workspace/CyberAgentSRG__api",
+          repo: "CyberAgentSRG/api",
+          role: "target",
+        },
+      ],
       runId: "run-1",
       startedAt: "2026-04-28T12:00:00Z",
       status: "running",

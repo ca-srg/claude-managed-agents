@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createRunQueueModule, type RunQueueModuleDeps } from "@/features/run-queue/handler";
+import {
+  createRunQueueModule,
+  type RunQueueModuleDeps,
+  RunTargetResolutionError,
+} from "@/features/run-queue/handler";
 import type { RunStartInput } from "@/features/run-queue/schemas";
 import { createDbModule } from "@/shared/persistence/db";
 import { createRunEventsModule } from "@/shared/run-events";
@@ -281,6 +285,32 @@ describe("createRunQueueModule", () => {
         origin: "linear_issue",
       } as RunStartInput),
     ).toThrow(/repo|primary repository/i);
+    expect(db.listRuns({ limit: 10 })).toEqual([]);
+  });
+
+  test("target resolution failures throw RunTargetResolutionError before persistence", () => {
+    const { db, queue } = createHarness(async (input) => ({
+      aborted: false,
+      runId: input.runId,
+      status: "completed",
+      timedOut: false,
+    }));
+    let thrown: unknown;
+
+    try {
+      queue.enqueue({
+        dryRun: false,
+        issue: 42,
+        repo: "acme/api",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown instanceof Error ? thrown.message : "").toBe(
+      "Repository acme/api is not registered and enabled",
+    );
+    expect(thrown instanceof RunTargetResolutionError).toBe(true);
     expect(db.listRuns({ limit: 10 })).toEqual([]);
   });
 

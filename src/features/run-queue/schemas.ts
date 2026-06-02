@@ -53,8 +53,23 @@ function withDefaultRunOrigin(value: unknown): unknown {
   return {
     ...withOrigin,
     issue: normalizedIssue.issue,
-    repo: typeof withOrigin.repo === "string" ? withOrigin.repo : normalizedIssue.repo,
+    repo: normalizeGitHubIssueRepo(withOrigin.repo, normalizedIssue.repo),
   };
+}
+
+function normalizeGitHubIssueRepo(
+  explicitRepo: unknown,
+  issueUrlRepo: string | undefined,
+): unknown {
+  if (typeof explicitRepo !== "string") {
+    return issueUrlRepo;
+  }
+
+  if (issueUrlRepo !== undefined && explicitRepo !== issueUrlRepo) {
+    return "";
+  }
+
+  return explicitRepo;
 }
 
 function normalizeGitHubIssueRef(value: unknown): { issue: number; repo?: string } | null {

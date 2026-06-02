@@ -75,6 +75,13 @@ export type StartOptions = {
 const DEFAULT_CANCEL_TIMEOUT_MS = 5_000;
 const STATUS_LOOKUP_LIMIT = 10_000;
 
+export class RunTargetResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunTargetResolutionError";
+  }
+}
+
 function createQueuedRunState(runId: string, input: ResolvedRunStartInput): RunState {
   const origin =
     input.origin === "github_issue"
@@ -114,29 +121,33 @@ function resolveRunStartRepositories(
       ? enabledRepos
       : [input.repo];
   if (targetRepos.length === 0 && input.repo === undefined) {
-    throw new Error("At least one enabled repository must be registered before starting a run");
+    throw new RunTargetResolutionError(
+      "At least one enabled repository must be registered before starting a run",
+    );
   }
 
   const registeredEnabled = new Set(enabledRepos);
   for (const repo of targetRepos) {
     if (!registeredEnabled.has(repo)) {
-      throw new Error(`Repository ${repo} is not registered and enabled`);
+      throw new RunTargetResolutionError(`Repository ${repo} is not registered and enabled`);
     }
   }
 
   let primaryRepo = input.repo;
   if (input.origin === "linear_issue" && primaryRepo === undefined) {
-    throw new Error("Linear issue runs require an explicit primary repository");
+    throw new RunTargetResolutionError("Linear issue runs require an explicit primary repository");
   }
   if (input.origin === "github_issue" && primaryRepo === undefined) {
     if (targetRepos.length !== 1) {
-      throw new Error(
+      throw new RunTargetResolutionError(
         "GitHub issue number is ambiguous with multiple registered repositories; pass an issue URL",
       );
     }
     const onlyRepo = targetRepos[0];
     if (onlyRepo === undefined) {
-      throw new Error("At least one enabled repository must be registered before starting a run");
+      throw new RunTargetResolutionError(
+        "At least one enabled repository must be registered before starting a run",
+      );
     }
     primaryRepo = onlyRepo;
   }
@@ -144,13 +155,17 @@ function resolveRunStartRepositories(
   if (primaryRepo === undefined) {
     const firstRepo = targetRepos[0];
     if (firstRepo === undefined) {
-      throw new Error("At least one enabled repository must be registered before starting a run");
+      throw new RunTargetResolutionError(
+        "At least one enabled repository must be registered before starting a run",
+      );
     }
     primaryRepo = firstRepo;
   }
 
   if (!registeredEnabled.has(primaryRepo)) {
-    throw new Error(`Primary repository ${primaryRepo} is not registered and enabled`);
+    throw new RunTargetResolutionError(
+      `Primary repository ${primaryRepo} is not registered and enabled`,
+    );
   }
 
   const repositories = Array.from(new Set([primaryRepo, ...targetRepos]));

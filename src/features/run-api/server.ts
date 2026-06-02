@@ -15,7 +15,7 @@ import {
   type RunSummaryOutput,
 } from "@/features/run-api/schemas";
 import { createDynamicMerger, formatSseEvent, withHeartbeat } from "@/features/run-api/sse";
-import type { createRunQueueModule } from "@/features/run-queue/handler";
+import { type createRunQueueModule, RunTargetResolutionError } from "@/features/run-queue/handler";
 import type { createDbModule } from "@/shared/persistence/db";
 import type { createRunEventsModule } from "@/shared/run-events";
 import {
@@ -289,6 +289,19 @@ export function createRunApiRoutes(deps: RunApiDeps): Hono {
     try {
       queued = deps.runQueue.enqueue(parsedInput.data);
     } catch (error) {
+      if (!(error instanceof RunTargetResolutionError)) {
+        deps.logger.error({ err: error }, "failed to enqueue run");
+        return c.json(
+          {
+            error: {
+              message: "failed to enqueue run",
+              type: "server_error",
+            },
+          },
+          500,
+        );
+      }
+
       return c.json(
         {
           error: {
@@ -356,7 +369,17 @@ export function createRunApiRoutes(deps: RunApiDeps): Hono {
     }
 
     const query = parsedQuery.data;
-    const runs = deps.db.listRuns({ limit: query.limit, repo: query.repo, status: query.status });
+    const summaries = deps.db.listRuns({
+      limit: query.limit,
+      repo: query.repo,
+      status: query.status,
+    });
+    const runs: RunSummaryOutput["runs"] = summaries.map((summary) => {
+      const run = deps.db.getRunById(summary.runId);
+      return run?.repositories === undefined
+        ? summary
+        : { ...summary, repositories: run.repositories };
+    });
     const payload: RunSummaryOutput = { runs, total: runs.length };
 
     return c.json(payload, 200);
@@ -499,7 +522,12 @@ export function createRunApiRoutes(deps: RunApiDeps): Hono {
     // `spawn_child_task` custom tool when migrating to Managed Agents'
     // multi-agent coordinator topology.
     const subIssues: RunDetailOutput["subIssues"] = [...run.subIssues];
-    const payload: RunDetailOutput = { ...summary, sessions, subIssues };
+    const payload: RunDetailOutput = {
+      ...summary,
+      ...(run.repositories === undefined ? {} : { repositories: run.repositories }),
+      sessions,
+      subIssues,
+    };
 
     return c.json(payload, 200);
   });
