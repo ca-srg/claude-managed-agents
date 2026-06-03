@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   BUILTIN_GITHUB_MCP_NAME,
   BUILTIN_GITHUB_MCP_TOKEN_ENV,
@@ -1271,7 +1272,14 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     openDatabase: (databasePath) => new Database(databasePath),
     ...overrides,
   };
-  const db = dependencies.openDatabase(resolveDatabasePath(dbPath, dependencies.cwd()));
+  const resolvedDatabasePath = resolveDatabasePath(dbPath, dependencies.cwd());
+  // SQLite cannot create missing parent directories, so a fresh checkout or
+  // git worktree (where the gitignored data dir does not exist yet) would fail
+  // to open the database. Create the directory up front for on-disk databases.
+  if (resolvedDatabasePath !== ":memory:") {
+    mkdirSync(dirname(resolvedDatabasePath), { recursive: true });
+  }
+  const db = dependencies.openDatabase(resolvedDatabasePath);
   let runtime: PreparedRuntime | null = null;
 
   db.exec("PRAGMA foreign_keys = ON;");
