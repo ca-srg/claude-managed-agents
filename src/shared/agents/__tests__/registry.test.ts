@@ -412,6 +412,81 @@ describe("agent registry", () => {
     }
   });
 
+  test("archived agent: update failure recreates both agents and overwrites state", async () => {
+    announceScenario("archived agent: update failure recreates both agents and overwrites state");
+    const directoryPath = createTempDir();
+
+    try {
+      await withWorkingDirectory(directoryPath, async () => {
+        let updatesAttempted = 0;
+        const { client, calls } = createFakeAnthropic({
+          updateResponse() {
+            updatesAttempted += 1;
+            throw new Error("400 Cannot modify archived agent");
+          },
+        });
+        const harness = createRegistryHarness();
+
+        try {
+          const firstResult = await harness.ensureAgents(client, createEnsureAgentsOptions());
+          const recoveredResult = await harness.ensureAgents(
+            client,
+            // Change the definition so the update path runs and hits the archived agent.
+            createEnsureAgentsOptions({ parentPrompt: "Parent prompt v2" }),
+          );
+
+          // First ensure created both agents; the second ensure changed only the
+          // parent prompt, so it attempted exactly one update (the parent) which
+          // threw the archived error, then recreated both agents fresh.
+          expect(updatesAttempted).toBe(1);
+          expect(calls.creates).toHaveLength(4);
+          expect(recoveredResult.parentAgentId).not.toBe(firstResult.parentAgentId);
+          expect(recoveredResult.childAgentId).not.toBe(firstResult.childAgentId);
+          expect(readPersistedState(harness.db)).toMatchObject({
+            parentAgentId: recoveredResult.parentAgentId,
+            childAgentId: recoveredResult.childAgentId,
+            definitionHash: recoveredResult.definitionHash,
+          });
+        } finally {
+          harness.close();
+        }
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
+  test("update failure that is not archived propagates", async () => {
+    announceScenario("update failure that is not archived propagates");
+    const directoryPath = createTempDir();
+
+    try {
+      await withWorkingDirectory(directoryPath, async () => {
+        const { client } = createFakeAnthropic({
+          updateResponse() {
+            throw new Error("500 internal error");
+          },
+        });
+        const harness = createRegistryHarness();
+
+        try {
+          await harness.ensureAgents(client, createEnsureAgentsOptions());
+
+          await expect(
+            harness.ensureAgents(
+              client,
+              createEnsureAgentsOptions({ parentPrompt: "Parent prompt v2" }),
+            ),
+          ).rejects.toThrow("500 internal error");
+        } finally {
+          harness.close();
+        }
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
   test("system skill change creates a new skill version and pins agents to it", async () => {
     const directoryPath = createTempDir();
 

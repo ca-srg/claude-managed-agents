@@ -257,6 +257,19 @@ function isDuplicateDisplayTitleError(error: unknown): boolean {
   );
 }
 
+/**
+ * Detect the Managed Agents API rejecting an update because the target agent
+ * has been archived server-side (`400 "Cannot modify archived agent"`). The
+ * locally persisted state still points at the archived id, so the only way to
+ * recover is to recreate both agents fresh. Matching on "archived" alone keeps
+ * this resilient to phrasing variants ("agent has been archived") since the
+ * check only runs inside the agent-update catch, where the only plausible
+ * archival error refers to the agent being modified.
+ */
+function isArchivedAgentError(error: unknown): boolean {
+  return readErrorMessage(error).toLowerCase().includes("archived");
+}
+
 async function findGitHubOperationsSystemSkill(
   client: RegistryAnthropicClient,
 ): Promise<ExistingGitHubOperationsSkill | null> {
@@ -426,7 +439,10 @@ export function createRegistry(deps: CreateRegistryDeps) {
       );
       const childDefinitionHash = registryDeps.hash(childDefinition);
 
-      if (options.forceRecreate === true || existingState === null) {
+      // Create both agents from scratch and persist the resulting state. The
+      // child is created first so its resolved id+version can seed the parent's
+      // coordinator roster.
+      const createAgentsFresh = async (createdAt: string): Promise<EnsureAgentsResult> => {
         const createdChild = await client.beta.agents.create(childDefinition);
         const parentDefinition = registryDeps.buildParent(
           options.cfg,
@@ -443,7 +459,7 @@ export function createRegistry(deps: CreateRegistryDeps) {
         );
         const createdParent = await client.beta.agents.create(parentDefinition);
         const nextState = buildPersistedState({
-          createdAt: new Date().toISOString(),
+          createdAt,
           parentAgentId: createdParent.id,
           parentAgentVersion: createdParent.version,
           childAgentId: createdChild.id,
@@ -456,79 +472,123 @@ export function createRegistry(deps: CreateRegistryDeps) {
         await registryDeps.agentStateStore.writeAgentRegistryState(nextState);
 
         return toEnsureAgentsResult(nextState);
+      };
+
+      if (options.forceRecreate === true || existingState === null) {
+        return createAgentsFresh(new Date().toISOString());
       }
 
-      const storedChildDefinitionHash = readStoredDefinitionHash(existingState, "child");
-      const childNeedsUpdate =
-        typeof storedChildDefinitionHash === "string"
-          ? storedChildDefinitionHash !== childDefinitionHash
-          : true;
+      // The persisted agents may have been archived server-side since they were
+      // created. An update against an archived id fails with a 400; recover by
+      // recreating both agents fresh under a new createdAt.
+      try {
+        return await updateExistingAgents({
+          client,
+          options,
+          existingState,
+          systemSkills,
+          childDefinition,
+          childDefinitionHash,
+        });
+      } catch (error) {
+        if (isArchivedAgentError(error)) {
+          return createAgentsFresh(new Date().toISOString());
+        }
 
-      const updatedChild = childNeedsUpdate
-        ? await client.beta.agents.update(
-            existingState.childAgentId,
-            toUpdateParams(childDefinition, existingState.childAgentVersion),
-          )
-        : {
-            id: existingState.childAgentId,
-            version: existingState.childAgentVersion,
-          };
-
-      // Build the parent definition only after the child reference is known so
-      // the coordinator roster always points at a real, resolved child version.
-      const parentDefinition = registryDeps.buildParent(
-        options.cfg,
-        { parent: options.parentPrompt },
-        options.parentCustomTools,
-        options.mcpServers,
-        systemSkills,
-        buildCoordinatorRoster(updatedChild.id, updatedChild.version),
-      );
-      const parentDefinitionHash = registryDeps.hash(parentDefinition);
-      const combinedDefinitionHash = hashCombinedDefinitions(
-        parentDefinitionHash,
-        childDefinitionHash,
-      );
-
-      if (existingState.definitionHash === combinedDefinitionHash && !childNeedsUpdate) {
-        return toEnsureAgentsResult(existingState);
+        throw error;
       }
-
-      const storedParentDefinitionHash = readStoredDefinitionHash(existingState, "parent");
-      const parentNeedsUpdate =
-        typeof storedParentDefinitionHash === "string"
-          ? storedParentDefinitionHash !== parentDefinitionHash
-          : true;
-
-      const updatedParent = parentNeedsUpdate
-        ? await client.beta.agents.update(
-            existingState.parentAgentId,
-            toUpdateParams(parentDefinition, existingState.parentAgentVersion),
-          )
-        : {
-            id: existingState.parentAgentId,
-            version: existingState.parentAgentVersion,
-          };
-
-      const nextState = buildPersistedState({
-        createdAt: existingState.createdAt,
-        parentAgentId: updatedParent.id,
-        parentAgentVersion: updatedParent.version,
-        childAgentId: updatedChild.id,
-        childAgentVersion: updatedChild.version,
-        definitionHash: combinedDefinitionHash,
-        parentDefinitionHash,
-        childDefinitionHash,
-      });
-
-      await registryDeps.agentStateStore.writeAgentRegistryState(nextState);
-
-      return toEnsureAgentsResult(nextState);
     } finally {
       if (lockAcquired) {
         await registryDeps.stateModule.releaseRunLock();
       }
     }
+  }
+
+  /**
+   * Update the parent/child agents referenced by persisted state, touching the
+   * Managed Agents API only for the roles whose definitions actually changed.
+   */
+  async function updateExistingAgents(params: {
+    client: RegistryAnthropicClient;
+    options: EnsureAgentsOptions;
+    existingState: AgentRegistryState;
+    systemSkills: ReturnType<typeof toGitHubOperationsSkillParams>[];
+    childDefinition: AgentCreateParams;
+    childDefinitionHash: string;
+  }): Promise<EnsureAgentsResult> {
+    const { client, options, existingState, systemSkills, childDefinition, childDefinitionHash } =
+      params;
+    const storedChildDefinitionHash = readStoredDefinitionHash(existingState, "child");
+    const childNeedsUpdate =
+      typeof storedChildDefinitionHash === "string"
+        ? storedChildDefinitionHash !== childDefinitionHash
+        : true;
+
+    const updatedChild = childNeedsUpdate
+      ? await client.beta.agents.update(
+          existingState.childAgentId,
+          toUpdateParams(childDefinition, existingState.childAgentVersion),
+        )
+      : {
+          id: existingState.childAgentId,
+          version: existingState.childAgentVersion,
+        };
+
+    // Build the parent definition only after the child reference is known so
+    // the coordinator roster always points at a real, resolved child version.
+    const parentDefinition = registryDeps.buildParent(
+      options.cfg,
+      { parent: options.parentPrompt },
+      options.parentCustomTools,
+      options.mcpServers,
+      systemSkills,
+      buildCoordinatorRoster(updatedChild.id, updatedChild.version),
+    );
+    const parentDefinitionHash = registryDeps.hash(parentDefinition);
+    const combinedDefinitionHash = hashCombinedDefinitions(
+      parentDefinitionHash,
+      childDefinitionHash,
+    );
+
+    // Known gap: when nothing changed we skip all update calls, so an agent that
+    // was archived server-side without a local definition change is not detected
+    // here and will instead surface later (e.g. at session create). Any real
+    // definition change reaches the update calls below and triggers the
+    // archived-agent recovery in the caller.
+    if (existingState.definitionHash === combinedDefinitionHash && !childNeedsUpdate) {
+      return toEnsureAgentsResult(existingState);
+    }
+
+    const storedParentDefinitionHash = readStoredDefinitionHash(existingState, "parent");
+    const parentNeedsUpdate =
+      typeof storedParentDefinitionHash === "string"
+        ? storedParentDefinitionHash !== parentDefinitionHash
+        : true;
+
+    const updatedParent = parentNeedsUpdate
+      ? await client.beta.agents.update(
+          existingState.parentAgentId,
+          toUpdateParams(parentDefinition, existingState.parentAgentVersion),
+        )
+      : {
+          id: existingState.parentAgentId,
+          version: existingState.parentAgentVersion,
+        };
+
+    const nextState = buildPersistedState({
+      createdAt: existingState.createdAt,
+      parentAgentId: updatedParent.id,
+      parentAgentVersion: updatedParent.version,
+      childAgentId: updatedChild.id,
+      childAgentVersion: updatedChild.version,
+      definitionHash: combinedDefinitionHash,
+      parentDefinitionHash,
+      childDefinitionHash,
+    });
+
+    await registryDeps.agentStateStore.writeAgentRegistryState(nextState);
+
+    return toEnsureAgentsResult(nextState);
   }
 
   return { ensureAgents };

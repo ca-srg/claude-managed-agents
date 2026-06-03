@@ -55,6 +55,11 @@ export type FakeClientCalls = {
 
 type CreateOverride = {
   createResponse?: (role: "parent" | "child") => { id: string; version: number };
+  updateResponse?: (
+    agentId: string,
+    params: AgentUpdateParams,
+    role: "parent" | "child",
+  ) => { id: string; version: number };
   skillCreateResponse?: (params: SkillCreateParams) => SkillCreateResponse;
   skillListResponse?: (
     params: SkillListParams | null | undefined,
@@ -202,6 +207,10 @@ export function createFakeAnthropic(overrides: CreateOverride = {}): {
         async update(agentId, params) {
           const role = inferRoleFromAgentId(agentId, rolesByAgentId);
           calls.updates.push({ agentId, params, role });
+
+          if (overrides.updateResponse) {
+            return overrides.updateResponse(agentId, params, role);
+          }
 
           const currentVersion = versionsByAgentId.get(agentId) ?? params.version;
           const nextVersion = currentVersion + 1;
