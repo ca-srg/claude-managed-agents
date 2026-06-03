@@ -31,6 +31,13 @@ export const ConfigSchema = z
         authorEmail: "claude-agent@users.noreply.github.com",
       }),
     vaultId: z.string().optional(),
+    /**
+     * Claude Console workspace slug used to deep-link recorded Managed Agents
+     * sessions from the dashboard. Overridable via the `CONSOLE_WORKSPACE` env
+     * var for multi-workspace organizations. When omitted, the dashboard falls
+     * back to {@link DEFAULT_CONSOLE_WORKSPACE}.
+     */
+    consoleWorkspace: z.string().optional(),
   })
   .strict();
 
@@ -51,7 +58,8 @@ export function applyEnvOverrides(base: unknown, env: NodeJS.ProcessEnv): unknow
   const hasTopLevelOverride =
     typeof env.MAX_SUB_ISSUES !== "undefined" ||
     typeof env.MAX_RUN_MINUTES !== "undefined" ||
-    typeof env.VAULT_ID !== "undefined";
+    typeof env.VAULT_ID !== "undefined" ||
+    typeof env.CONSOLE_WORKSPACE !== "undefined";
 
   if (!hasModelOverride && !hasTopLevelOverride) {
     return base;
@@ -78,6 +86,9 @@ export function applyEnvOverrides(base: unknown, env: NodeJS.ProcessEnv): unknow
       ? {}
       : { maxRunMinutes: Number(env.MAX_RUN_MINUTES) }),
     ...(typeof env.VAULT_ID === "undefined" ? {} : { vaultId: env.VAULT_ID }),
+    ...(typeof env.CONSOLE_WORKSPACE === "undefined"
+      ? {}
+      : { consoleWorkspace: env.CONSOLE_WORKSPACE }),
   };
 }
 

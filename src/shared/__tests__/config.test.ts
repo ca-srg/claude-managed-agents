@@ -213,6 +213,26 @@ describe("loadConfig", () => {
     }
   });
 
+  it("applies the CONSOLE_WORKSPACE env override", async () => {
+    const directoryPath = createTempDir();
+
+    try {
+      const configPath = writeTsConfig(
+        directoryPath,
+        "console-workspace.config.ts",
+        '{ models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" } }',
+      );
+
+      await withEnv({ CONSOLE_WORKSPACE: "acme" }, async () => {
+        const config = await loadConfig(configPath);
+
+        expect(config.consoleWorkspace).toBe("acme");
+      });
+    } finally {
+      cleanupTempDir(directoryPath);
+    }
+  });
+
   it("applies defaults when optional fields are omitted", async () => {
     const directoryPath = createTempDir();
 
