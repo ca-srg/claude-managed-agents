@@ -26,6 +26,30 @@ export const BUILTIN_GITHUB_MCP_TOKEN_ENV = "GITHUB_APP_INSTALLATION_TOKEN";
 export const SUPPORTED_MODELS = ["claude-opus-4-7", "claude-sonnet-4-6"] as const;
 
 /**
+ * Base URL of the Claude Console. Managed Agents session detail pages live
+ * under `/workspaces/{workspace}/sessions/{sessionId}`, so the dashboard can
+ * deep-link each recorded session straight to its Console trace view.
+ */
+export const CLAUDE_CONSOLE_BASE_URL = "https://platform.claude.com";
+
+/**
+ * Default Console workspace slug used to build session deep-links. Personal
+ * accounts and single-workspace orgs use `default`; multi-workspace orgs can
+ * override it via the `CONSOLE_WORKSPACE` env var (see {@link applyEnvOverrides}).
+ */
+export const DEFAULT_CONSOLE_WORKSPACE = "default";
+
+/**
+ * Build the Claude Console deep-link for a Managed Agents session.
+ */
+export function sessionConsoleUrl(
+  sessionId: string,
+  workspace: string = DEFAULT_CONSOLE_WORKSPACE,
+): string {
+  return `${CLAUDE_CONSOLE_BASE_URL}/workspaces/${encodeURIComponent(workspace)}/sessions/${encodeURIComponent(sessionId)}`;
+}
+
+/**
  * Sentinel marking the still-pending re-enablement of `thinking` in agent
  * definitions. `AgentCreateParams` in `@anthropic-ai/sdk@0.95.1` still does
  * not expose a `thinking` field — once it does, replace this with a real

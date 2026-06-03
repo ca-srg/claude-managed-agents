@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  CLAUDE_CONSOLE_BASE_URL,
+  DEFAULT_CONSOLE_WORKSPACE,
   GITHUB_MCP_URL,
   MAX_THINKING_BUDGET_DEFERRED,
   SUPPORTED_MODELS,
+  sessionConsoleUrl,
   TOOL_NAMES,
 } from "../constants";
 
@@ -35,6 +38,26 @@ describe("SUPPORTED_MODELS", () => {
 describe("GITHUB_MCP_URL", () => {
   test("exports the exact GitHub MCP URL", () => {
     expect(GITHUB_MCP_URL).toBe("https://api.githubcopilot.com/mcp/");
+  });
+});
+
+describe("sessionConsoleUrl", () => {
+  test("builds a Claude Console deep-link for the default workspace", () => {
+    expect(sessionConsoleUrl("sesn_01UV5hUcBt3CcgYKxH1V3uUf")).toBe(
+      `${CLAUDE_CONSOLE_BASE_URL}/workspaces/${DEFAULT_CONSOLE_WORKSPACE}/sessions/sesn_01UV5hUcBt3CcgYKxH1V3uUf`,
+    );
+  });
+
+  test("uses the provided workspace slug", () => {
+    expect(sessionConsoleUrl("sesn_abc", "acme")).toBe(
+      `${CLAUDE_CONSOLE_BASE_URL}/workspaces/acme/sessions/sesn_abc`,
+    );
+  });
+
+  test("url-encodes the workspace and session identifiers", () => {
+    expect(sessionConsoleUrl("sesn /1", "team space")).toBe(
+      `${CLAUDE_CONSOLE_BASE_URL}/workspaces/team%20space/sessions/sesn%20%2F1`,
+    );
   });
 });
 

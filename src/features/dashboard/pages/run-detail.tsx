@@ -5,6 +5,7 @@ import { StatCard } from "@/features/dashboard/components/stat-card";
 import { StatusBadge } from "@/features/dashboard/components/status-badge";
 import { t } from "@/features/dashboard/i18n";
 import type { RunFailure } from "@/features/dashboard/run-failure";
+import { sessionConsoleUrl } from "@/shared/constants";
 import type { SessionUsageRow, UsageAggregate } from "@/shared/persistence/schemas";
 import { formatTokens, formatUsd, totalTokenVolume } from "@/shared/pricing";
 import { fallbackRunOrigin, originShortDisplay, originUrl } from "@/shared/run-origin";
@@ -25,6 +26,8 @@ export type RunDetailPageProps = {
   usageAggregate: UsageAggregate;
   liveTailEnabled?: boolean;
   stopNotice?: StopNotice;
+  /** Claude Console workspace slug used to deep-link recorded sessions. */
+  consoleWorkspace?: string;
 };
 
 function isRunStoppable(status: RunStatus): boolean {
@@ -36,6 +39,13 @@ export const RunDetailPage: FC<RunDetailPageProps> = (props) => {
   const shortRunId = run.runId.slice(0, 8);
   const liveTailEnabled = props.liveTailEnabled ?? false;
   const stoppable = isRunStoppable(props.status);
+  // The first recorded session is the parent (coordinator) thread, so it is the
+  // natural entry point into this run's trace on the Claude Console.
+  const primarySessionId = run.sessionIds[0];
+  const consoleHref =
+    primarySessionId === undefined
+      ? undefined
+      : sessionConsoleUrl(primarySessionId, props.consoleWorkspace);
   return (
     <Layout title={`${t("run")} ${shortRunId}`} activeNav="run-detail">
       <section class="space-y-8">
@@ -52,7 +62,20 @@ export const RunDetailPage: FC<RunDetailPageProps> = (props) => {
             <span class="font-mono font-medium text-neutral-900">{shortRunId}</span>
           </nav>
           <h1 class="text-3xl font-bold tracking-tight text-neutral-900 font-mono">
-            {t("run")} <span class="text-brand-600">{shortRunId}</span>
+            {t("run")}{" "}
+            {consoleHref ? (
+              <a
+                href={consoleHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={t("open session in Claude Console")}
+                class="text-brand-600 hover:text-brand-700 hover:underline"
+              >
+                {shortRunId}
+              </a>
+            ) : (
+              <span class="text-brand-600">{shortRunId}</span>
+            )}
           </h1>
         </header>
 

@@ -576,6 +576,10 @@ describe("createApp", () => {
     expect(body).toContain("session metrics");
     expect(body).toContain("sub issues (1)");
     expect(body).toContain("task-1");
+    // The run header deep-links to the parent session on the Claude Console.
+    expect(body).toContain(
+      'href="https://platform.claude.com/workspaces/default/sessions/session-1"',
+    );
   });
 
   test("GET /runs/:runId shows failed run error payload message and type", async () => {

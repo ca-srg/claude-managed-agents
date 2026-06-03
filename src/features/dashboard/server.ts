@@ -2202,6 +2202,7 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
     }
 
     const props: RunDetailPageProps = {
+      consoleWorkspace: (opts.config ?? DEFAULT_CONFIG).consoleWorkspace,
       failure: failureForStatus(db, runId, status),
       liveTailEnabled: anthropicClient !== undefined,
       run,

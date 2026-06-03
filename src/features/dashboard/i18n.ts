@@ -448,6 +448,7 @@ const JA_TRANSLATIONS: Record<string, string> = {
   stop: "停止",
   clear: "クリア",
   "raw stream": "raw stream",
+  "open session in Claude Console": "Claude Console でセッションを開く",
   "live run": "ライブ実行",
   Error: "エラー",
   phases: "フェーズ",
