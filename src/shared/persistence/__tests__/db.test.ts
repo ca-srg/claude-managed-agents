@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createDbModule } from "@/shared/persistence/db";
 import type { SessionResult } from "@/shared/session";
@@ -838,5 +841,21 @@ describe("createDbModule pid migration", () => {
     expect(() => secondModule.initDb()).not.toThrow();
 
     sharedDb.close();
+  });
+
+  test("creates the database parent directory when it does not exist", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "db-parent-"));
+    const dbPath = join(tempRoot, "nested", "data", "dashboard.db");
+
+    try {
+      const dbModule = createDbModule(dbPath);
+      try {
+        expect(existsSync(dbPath)).toBe(true);
+      } finally {
+        dbModule.close();
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 });
