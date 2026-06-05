@@ -424,6 +424,15 @@ const JA_TRANSLATIONS: Record<string, string> = {
   "Requests cancellation through the run queue and waits for the run to stop.":
     "実行キュー経由でキャンセルを要求し、実行停止を待ちます。",
   "stop this run": "この実行を停止",
+  "Stopping…": "停止中…",
+  "Stopping the run. This may take a few seconds…":
+    "実行を停止しています。数秒かかることがあります…",
+  "The run has been stopped.": "実行を停止しました。",
+  "This run has already finished.": "この実行は既に終了しています。",
+  "Stop request timed out. The run may not have stopped.":
+    "停止リクエストがタイムアウトしました。実行は停止していない可能性があります。",
+  "Failed to request stop. Please try again.":
+    "停止のリクエストに失敗しました。もう一度お試しください。",
   sessions: "セッション",
   "sub issues": "サブ Issue",
   "session metrics": "セッションメトリクス",

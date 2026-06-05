@@ -3,6 +3,10 @@ import type { FC } from "hono/jsx";
 import { Layout } from "@/features/dashboard/components/layout";
 import { RunLiveScript } from "@/features/dashboard/components/run-live-script";
 import { StatusBadge } from "@/features/dashboard/components/status-badge";
+import {
+  StopNoticePlaceholder,
+  StopRunScript,
+} from "@/features/dashboard/components/stop-run-script";
 import { t } from "@/features/dashboard/i18n";
 import { fallbackRunOrigin, originShortDisplay, originUrl } from "@/shared/run-origin";
 import type { SessionResult } from "@/shared/session";
@@ -183,6 +187,7 @@ export const RunLivePage: FC<RunLivePageProps> = (props) => {
               id="stop-button-form"
               method="post"
               action={`/api/runs/${run.runId}/stop`}
+              data-stop-run-form
               style={{ display: isRunning ? "block" : "none" }}
             >
               <button
@@ -192,6 +197,7 @@ export const RunLivePage: FC<RunLivePageProps> = (props) => {
                 {t("stop this run")}
               </button>
             </form>
+            <StopNoticePlaceholder />
           </aside>
 
           <section class="space-y-8 lg:col-span-2">
@@ -264,6 +270,7 @@ export const RunLivePage: FC<RunLivePageProps> = (props) => {
         </div>
       </section>
       <RunLiveScript runId={run.runId} />
+      <StopRunScript />
     </Layout>
   );
 };
