@@ -3,6 +3,10 @@ import type { Child, FC } from "hono/jsx";
 import { Layout } from "@/features/dashboard/components/layout";
 import { StatCard } from "@/features/dashboard/components/stat-card";
 import { StatusBadge } from "@/features/dashboard/components/status-badge";
+import {
+  StopNoticePlaceholder,
+  StopRunScript,
+} from "@/features/dashboard/components/stop-run-script";
 import { t } from "@/features/dashboard/i18n";
 import type { RunFailure } from "@/features/dashboard/run-failure";
 import type { SessionUsageRow, UsageAggregate } from "@/shared/persistence/schemas";
@@ -77,6 +81,7 @@ export const RunDetailPage: FC<RunDetailPageProps> = (props) => {
         </div>
       </section>
       {liveTailEnabled && run.sessionIds.length > 0 ? <LiveTailScript /> : null}
+      {stoppable ? <StopRunScript /> : null}
     </Layout>
   );
 };
@@ -122,7 +127,7 @@ const StopRunCard: FC<{ runId: string }> = ({ runId }) => (
     <p class="text-sm text-neutral-500">
       {t("Requests cancellation through the run queue and waits for the run to stop.")}
     </p>
-    <form method="post" action={`/api/runs/${runId}/stop`}>
+    <form method="post" action={`/api/runs/${runId}/stop`} data-stop-run-form>
       <button
         type="submit"
         class="w-full px-4 py-2 text-sm font-medium text-danger-700 bg-danger-50 border border-danger-200 rounded-md hover:bg-danger-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-danger-500 transition-colors"
@@ -130,6 +135,7 @@ const StopRunCard: FC<{ runId: string }> = ({ runId }) => (
         {t("stop this run")}
       </button>
     </form>
+    <StopNoticePlaceholder />
   </div>
 );
 

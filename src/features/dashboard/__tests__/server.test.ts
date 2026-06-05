@@ -672,6 +672,12 @@ describe("createApp", () => {
     expect(body).toContain("stop this run");
     expect(body).toContain('style="display:block"');
     expect(body).toContain('id="run-status-badge"');
+    // Stop feedback wiring: the form is intercepted by fetch and reports the
+    // outcome in an inline notice instead of navigating to the raw JSON reply.
+    expect(body).toContain("data-stop-run-form");
+    expect(body).toContain("data-stop-notice");
+    expect(body).toContain("[data-stop-run-form]");
+    expect(body).toContain("response.status === 504");
   });
 
   test("GET /runs/:runId/live hides stop button and shows PR URL when status is completed", async () => {
