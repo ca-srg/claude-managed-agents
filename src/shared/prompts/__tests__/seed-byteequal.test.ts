@@ -1,12 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { createDbModule } from "@/shared/persistence/db";
-import {
-  CHILD_RUNTIME_TEMPLATE_SOURCE,
-  GENERIC_CHILD_AGENT_PROMPT,
-  GENERIC_PARENT_AGENT_PROMPT,
-  PARENT_RUNTIME_TEMPLATE_SOURCE,
-} from "@/shared/prompts/defaults";
+import { GENERIC_CHILD_AGENT_PROMPT, GENERIC_PARENT_AGENT_PROMPT } from "@/shared/prompts/defaults";
 import type { PromptKey, SeedDeps } from "@/shared/prompts/seeder";
 import { seedDefaultPrompts } from "@/shared/prompts/seeder";
 
@@ -28,7 +23,7 @@ function getPromptBody(dbModule: ReturnType<typeof createDbModule>, key: PromptK
 }
 
 describe("seedDefaultPrompts byte-equal defaults", () => {
-  test("stores all seeded prompt bodies byte-equal to canonical sources", async () => {
+  test("stores seeded system prompt bodies byte-equal to canonical sources", async () => {
     const dbModule = createDbModule(":memory:");
 
     try {
@@ -38,8 +33,9 @@ describe("seedDefaultPrompts byte-equal defaults", () => {
 
       expect(getPromptBody(dbModule, "parent.system")).toBe(GENERIC_PARENT_AGENT_PROMPT);
       expect(getPromptBody(dbModule, "child.system")).toBe(GENERIC_CHILD_AGENT_PROMPT);
-      expect(getPromptBody(dbModule, "parent.runtime")).toBe(PARENT_RUNTIME_TEMPLATE_SOURCE);
-      expect(getPromptBody(dbModule, "child.runtime")).toBe(CHILD_RUNTIME_TEMPLATE_SOURCE);
+      // Runtime templates are rendered from code; they are never seeded into the DB.
+      expect(dbModule.getPrompt("parent.runtime")).toBeNull();
+      expect(dbModule.getPrompt("child.runtime")).toBeNull();
     } finally {
       dbModule.close();
     }

@@ -952,23 +952,32 @@ function isEditablePromptKey(key: PromptKey): key is EditablePromptKey {
   return EditablePromptKeySchema.safeParse(key).success;
 }
 
-function getPromptWithFallback(db: DbModule, key: PromptKey): PromptWithBody {
-  return (
-    db.getPrompt(key) ?? {
-      body: getDefaultPrompt(key),
-      currentRevisionId: 0,
-      promptKey: key,
-      updatedAt: new Date().toISOString(),
-    }
-  );
+function defaultPromptWithBody(key: PromptKey): PromptWithBody {
+  return {
+    body: getDefaultPrompt(key),
+    currentRevisionId: 0,
+    promptKey: key,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
-function getPromptRevisionCount(db: DbModule, key: PromptKey, prompt: PromptWithBody): number {
+function getPromptWithFallback(db: DbModule, key: PromptKey): PromptWithBody {
+  // Runtime templates are rendered from code on each deploy; rows seeded into
+  // the DB by older versions go stale and must not shadow the current source.
+  if (!isEditablePromptKey(key)) {
+    return defaultPromptWithBody(key);
+  }
+
+  return db.getPrompt(key) ?? defaultPromptWithBody(key);
+}
+
+function getPromptRevisionCount(db: DbModule, key: PromptKey): number {
   if (isEditablePromptKey(key)) {
     return db.getPromptRevisions(key).length;
   }
 
-  return prompt.currentRevisionId > 0 ? 1 : 0;
+  // Runtime templates live in code and have no DB-backed revisions.
+  return 0;
 }
 
 function toPromptRevisionView(revision: PromptRevisionRow): PromptRevisionView {
@@ -1980,7 +1989,7 @@ export function dashboardWebRoutes(opts: CreateAppOptions): Hono {
       return {
         editable: isEditablePromptKey(key),
         promptKey: key,
-        revisionCount: getPromptRevisionCount(db, key, prompt),
+        revisionCount: getPromptRevisionCount(db, key),
         updatedAt: prompt.currentRevisionId > 0 ? prompt.updatedAt : null,
       };
     });

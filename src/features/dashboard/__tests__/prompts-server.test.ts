@@ -89,6 +89,19 @@ describe("prompt routes", () => {
     expect(body).not.toMatch(/class="prompt-history-list\b[^"]*"/);
   });
 
+  test("GET /prompts/parent.runtime shows the current code default even when a stale DB row exists", async () => {
+    const { app } = createAppWithDb((db) => {
+      db.seedPromptIfMissing("parent.runtime", "Stale runtime template body from an old deploy");
+    });
+
+    const response = await app.request(request("/prompts/parent.runtime"));
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).not.toContain("Stale runtime template body from an old deploy");
+    expect(body).toContain("buildParentPrompt");
+  });
+
   test("GET /prompts/bogus.key returns 404 through c.notFound", async () => {
     const { app } = createAppWithDb();
 

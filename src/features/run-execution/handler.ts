@@ -87,6 +87,7 @@ type RunEventsModule = Pick<ReturnType<typeof createRunEventsModule>, "emit">;
 
 export type RunExecutionDb = Pick<
   DashboardDbModule,
+  | "deletePrompt"
   | "getDefaultEnvironmentState"
   | "getPrompt"
   | "getRepoEnvironment"

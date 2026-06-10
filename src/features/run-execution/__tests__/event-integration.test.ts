@@ -93,6 +93,7 @@ function createMockDb() {
       calls.sessionPlaceholders.push({ runId, sessionId });
     },
     listMcpServers: () => [],
+    deletePrompt: () => ({ deleted: false }),
     seedPromptIfMissing: () => ({ seeded: false }),
     setDefaultEnvironmentState: () => {},
     setRepoEnvironmentAnthropicState: () => {},
