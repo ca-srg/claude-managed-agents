@@ -37,14 +37,30 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain(
       "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
     );
-    expect(prompt).toContain("Commit style = conventional");
+    expect(prompt).toContain("Configured commit style = conventional");
     expect(prompt).toContain(
       "Git identity = claude-agent[bot]/claude-agent@users.noreply.github.com",
     );
     expect(prompt).toContain("MUST run `bun test` before commit if the project has it");
     expect(prompt).toContain("use the GitHub MCP/API file commit path on the same branch");
     expect(prompt).toContain(
-      "call the `create_final_pr` custom tool with a consolidated title and body",
+      "call the `create_final_pr` custom tool with a consolidated English Conventional Commits title and Japanese body",
+    );
+    expect(prompt).toContain("Language policy:");
+    expect(prompt).toContain(
+      "MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies",
+    );
+    expect(prompt).toContain(
+      "MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format",
+    );
+    expect(prompt).toContain(
+      "Use English for terms that are commonly written in English in developer workflows",
+    );
+    expect(prompt).toContain(
+      "MUST pass an English Conventional Commits `title` and a Japanese `body` to `create_sub_issue`",
+    );
+    expect(prompt).toContain(
+      "English Conventional Commits title, Japanese description, and ordered acceptance criteria in Japanese",
     );
     expect(prompt).toContain(
       "Emit a final `agent.message` containing the resulting PR URL and stop",
@@ -75,7 +91,7 @@ describe("buildParentPrompt", () => {
 
     expect(prompt).toContain("no more than 5 atomic sub-tasks");
     expect(prompt).toContain("MUST NOT delegate to `github-issue-implementer` more than 5 times");
-    expect(prompt).toContain("Commit style = gitmoji");
+    expect(prompt).toContain("Configured commit style = gitmoji");
     expect(prompt).toContain("Git identity = custom-bot/custom@example.com");
     expect(prompt).toContain("origin/develop");
 
@@ -124,6 +140,8 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain("parentId=<Linear parent issue identifier/id>");
     expect(prompt).toContain("fallback: `parentId=ENG-123`");
     expect(prompt).toContain("same stable `taskId`");
+    expect(prompt).toContain("English Conventional Commits title, Japanese description");
+    expect(prompt).toContain("ordered Japanese acceptance criteria");
     expect(prompt).toContain("Reuse matching existing Linear child/sub-issues");
     expect(prompt).toContain(
       "MUST NOT use the GitHub-only `create_sub_issue` custom tool for Linear-origin runs",
@@ -143,7 +161,7 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain("re-delegate the same Linear child/sub-issue");
     expect(prompt).toContain("(max 3 retries per task)");
     expect(prompt).toContain(
-      "call the `create_final_pr` custom tool with a consolidated title and body",
+      "call the `create_final_pr` custom tool with a consolidated English Conventional Commits title and Japanese body",
     );
     expect(prompt).not.toContain("MUST NOT call the `create_sub_issue` custom tool for this run");
     expect(prompt).not.toContain("There is no parent GitHub issue for Linear-origin runs");

@@ -37,12 +37,14 @@ describe("buildChildPrompt", () => {
 
   it("should render commit style correctly (conventional)", () => {
     const prompt = buildChildPrompt({ ...defaultArgs, commitStyle: "conventional" });
-    expect(prompt).toContain("Commit using the conventional format (`{type}({scope}): {subject}`)");
+    expect(prompt).toContain("Configured commit style = conventional");
+    expect(prompt).toContain("Commit messages MUST still use English Conventional Commits");
   });
 
   it("should render commit style correctly (plain)", () => {
     const prompt = buildChildPrompt({ ...defaultArgs, commitStyle: "plain" });
-    expect(prompt).toContain("Commit using the plain format (`{type}({scope}): {subject}`)");
+    expect(prompt).toContain("Configured commit style = plain");
+    expect(prompt).toContain("Commit messages MUST still use English Conventional Commits");
   });
 
   it("should include coordinator topology role guidance", () => {
@@ -71,6 +73,21 @@ describe("buildChildPrompt", () => {
     expect(prompt).toContain("commitSha");
     expect(prompt).toContain("filesChanged");
     expect(prompt).toContain("testOutput");
+  });
+
+  it("should require Japanese human-readable output", () => {
+    const prompt = buildChildPrompt(defaultArgs);
+
+    expect(prompt).toContain("Language policy:");
+    expect(prompt).toContain("MUST write GitHub sub-issue bodies");
+    expect(prompt).toContain(
+      "MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format",
+    );
+    expect(prompt).toContain(
+      "Use English for terms that are commonly written in English in developer workflows",
+    );
+    expect(prompt).toContain("<short Japanese summary or last lines of bun test>");
+    expect(prompt).toContain("<one-sentence Japanese explanation>");
   });
 
   it("should not include any repository-specific section when no override is provided", () => {
