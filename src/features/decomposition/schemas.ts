@@ -8,12 +8,22 @@ export const CreateSubIssueInput = z
       .array(z.string().min(1).describe("GitHub login to assign to the created sub-issue."))
       .optional()
       .describe("Optional list of GitHub assignees for the sub-issue."),
-    body: z.string().optional().describe("Optional Markdown body for the sub-issue."),
+    body: z
+      .string()
+      .optional()
+      .describe(
+        "Optional Markdown body for the sub-issue. Must be written in Japanese. Use English for terms commonly written in English in developer workflows, such as code identifiers, file paths, URLs, and quoted source text.",
+      ),
     labels: z
       .array(z.string().min(1).describe("GitHub label name to apply to the sub-issue."))
       .optional()
       .describe("Optional label names for the sub-issue."),
-    title: z.string().min(1).describe("Sub-issue title for the delegated child task."),
+    title: z
+      .string()
+      .min(1)
+      .describe(
+        "Sub-issue title for the delegated child task. Must be written in English using Conventional Commits format (`type(scope): subject`; omit scope when not useful).",
+      ),
   })
   .strict()
   .describe("Input payload for creating or reusing a linked GitHub sub-issue.");

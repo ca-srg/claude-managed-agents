@@ -16,6 +16,10 @@ describe("default prompt constants (byte-equal canonical source)", () => {
         "Use the attached GitHub App GitHub Operations skill for repository, issue, commit, push, and PR behavior.",
         "Use only the provided custom tools for delegation and final PR creation.",
         "Do not edit files directly.",
+        "Language policy:",
+        "- MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.",
+        "- MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format (`type(scope): subject`; omit scope when not useful).",
+        "- Use English for terms that are commonly written in English in developer workflows, such as code identifiers, file paths, branch names, commit types/scopes, tool names, JSON keys, URLs, log snippets, error names, quoted source text, and GitHub closing keywords such as `Closes #...`.",
       ].join("\n"),
     );
   });
@@ -27,6 +31,8 @@ describe("default prompt constants (byte-equal canonical source)", () => {
         "Wait for the user message containing the delegated task, branch, repository, and acceptance criteria.",
         "Use the attached GitHub App GitHub Operations skill for repository, commit, and push behavior.",
         "Work only on the assigned task and return structured JSON.",
+        "Commit messages must be written in English using Conventional Commits format (`type(scope): subject`; omit scope when not useful).",
+        "Write human-readable JSON string values in Japanese. Use English for JSON keys, code identifiers, file paths, logs, quoted source text, and other terms that are commonly written in English in developer workflows.",
       ].join("\n"),
     );
   });

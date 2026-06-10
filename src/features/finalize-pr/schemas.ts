@@ -3,7 +3,12 @@ import { z } from "zod";
 export const CreateFinalPrInput = z
   .object({
     base: z.string().min(1).describe("Base branch the final pull request should target."),
-    body: z.string().min(1).describe("Pull request body content to publish or update."),
+    body: z
+      .string()
+      .min(1)
+      .describe(
+        "Pull request body content to publish or update. Must be written in Japanese. Use English for terms commonly written in English in developer workflows, such as code identifiers, file paths, URLs, and quoted source text.",
+      ),
     head: z
       .string()
       .min(1)
@@ -16,7 +21,12 @@ export const CreateFinalPrInput = z
       .describe(
         "Deprecated: parent GitHub issue number. The server validates this against run origin when provided.",
       ),
-    title: z.string().min(1).describe("Pull request title to publish or update."),
+    title: z
+      .string()
+      .min(1)
+      .describe(
+        "Pull request title to publish or update. Must be written in English using Conventional Commits format (`type(scope): subject`; omit scope when not useful).",
+      ),
   })
   .strict()
   .describe("Input payload for creating or updating the final parent pull request.");

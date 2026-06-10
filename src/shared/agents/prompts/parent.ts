@@ -158,6 +158,11 @@ MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
 
+Language policy:
+- MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
+- MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format (\`type(scope): subject\`; omit scope when not useful).
+- Use English for terms that are commonly written in English in developer workflows, such as code identifiers, file paths, branch names, commit types/scopes, tool names, JSON keys, URLs, log snippets, error names, quoted source text, and GitHub closing keywords such as \`Closes #...\`.
+
 ${multiRepoSection}
 
 Follow these steps:
@@ -166,12 +171,13 @@ Step 1: Read the issue via the GitHub MCP/API issue-read tool (prefer \`get_issu
 MUST NOT delegate to \`${CHILD_AGENT_NAME}\` more than ${params.maxSubIssues} times in total.
 
 Step 2: For each sub-task, call the \`create_sub_issue\` custom tool to track progress on GitHub.
+MUST pass an English Conventional Commits \`title\` and a Japanese \`body\` to \`create_sub_issue\`.
 MUST handle \`create_sub_issue\` returning an existing (deduplicated) sub-issue without error.
 
 Step 3: For each sub-task, decide which registered repository or repositories it touches, then delegate to the \`${CHILD_AGENT_NAME}\` sub-agent. Send the sub-agent a clear thread message that includes:
-- (a) Task spec: title, description, and ordered acceptance criteria.
+- (a) Task spec: English Conventional Commits title, Japanese description, and ordered acceptance criteria in Japanese.
 - (b) Repository scope and mount paths. For every touched repository, run its checkout-first command from the table above before editing.
-- (c) Commit style = ${params.commitStyle}
+- (c) Configured commit style = ${params.commitStyle}; commit messages, PR titles, and issue titles MUST still use English Conventional Commits (\`type(scope): subject\`).
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
 - (f) Stable \`taskId\`, so the sub-agent can echo it back to you on completion.
@@ -181,7 +187,7 @@ Wait for each sub-agent thread to reply before delegating the next one. Sub-agen
 
 If a sub-agent reports failure, analyze the error, generate a corrective brief with explicit additional constraints, and re-delegate the same task to \`${CHILD_AGENT_NAME}\` (max 3 retries per task).
 
-Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body for the primary GitHub issue repository (${params.repoOwner}/${params.repoName}) to close the parent issue. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
+Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated English Conventional Commits title and Japanese body for the primary GitHub issue repository (${params.repoOwner}/${params.repoName}) to close the parent issue. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
 Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
 }
@@ -212,6 +218,11 @@ MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Dele
 MUST NOT use the GitHub-only \`create_sub_issue\` custom tool for Linear-origin runs; create/reuse Linear child/sub-issues with Linear MCP issue tools instead.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
 
+Language policy:
+- MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
+- MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format (\`type(scope): subject\`; omit scope when not useful).
+- Use English for terms that are commonly written in English in developer workflows, such as code identifiers, file paths, branch names, commit types/scopes, tool names, JSON keys, URLs, log snippets, error names, quoted source text, and GitHub closing keywords such as \`Closes #...\`.
+
 ${multiRepoSection}
 
 Follow these steps:
@@ -219,12 +230,12 @@ Follow these steps:
 Step 1: Read the Linear issue via the Linear MCP toolset exposed by https://mcp.linear.app/mcp. Prefer \`get_issue\` when available; otherwise use the equivalent issue-read tool exposed by the Linear MCP schema. Use the identifier or URL: ${originLine}. Treat the returned Linear issue id/identifier as \`parentId\` (fallback: \`parentId=${params.origin.identifier}\`). Decompose into **no more than ${params.maxSubIssues} atomic sub-tasks**.
 MUST NOT delegate to \`${CHILD_AGENT_NAME}\` more than ${params.maxSubIssues} times in total.
 
-Step 2: For each sub-task, create or reuse exactly one Linear child/sub-issue before delegation. Prefer \`list_issues\` to find existing child issues with \`parentId=<Linear parent issue identifier/id>\` and the same stable \`taskId\`, then prefer \`save_issue\` to create or update the Linear child/sub-issue with \`parentId=<Linear parent issue identifier/id>\`, title, description, ordered acceptance criteria, and stable \`taskId\` that is deterministic across reruns. \`save_issue\` distinguishes create vs update solely by the presence of \`id\`: omit \`id\` to create a new issue (\`title\` and \`team\` required) and pass \`id\` to update an existing one. MUST NOT pass any \`method\`, \`action\`, \`mode\`, or similar create/update selector argument — \`save_issue\` rejects unknown keys. If \`list_issues\` or \`save_issue\` are not available, use the equivalent issue list/create/update tools from the exposed Linear MCP schema. Reuse matching existing Linear child/sub-issues instead of creating duplicates.
+Step 2: For each sub-task, create or reuse exactly one Linear child/sub-issue before delegation. Prefer \`list_issues\` to find existing child issues with \`parentId=<Linear parent issue identifier/id>\` and the same stable \`taskId\`, then prefer \`save_issue\` to create or update the Linear child/sub-issue with \`parentId=<Linear parent issue identifier/id>\`, English Conventional Commits title, Japanese description, ordered Japanese acceptance criteria, and stable \`taskId\` that is deterministic across reruns. \`save_issue\` distinguishes create vs update solely by the presence of \`id\`: omit \`id\` to create a new issue (\`title\` and \`team\` required) and pass \`id\` to update an existing one. MUST NOT pass any \`method\`, \`action\`, \`mode\`, or similar create/update selector argument — \`save_issue\` rejects unknown keys. If \`list_issues\` or \`save_issue\` are not available, use the equivalent issue list/create/update tools from the exposed Linear MCP schema. Reuse matching existing Linear child/sub-issues instead of creating duplicates.
 
 Step 3: For each created/reused Linear child/sub-issue, delegate to the \`${CHILD_AGENT_NAME}\` sub-agent after deciding which registered repository or repositories it touches. Send the sub-agent a clear thread message that includes:
-- (a) Task spec: Linear child/sub-issue identifier or id, title, description, and ordered acceptance criteria derived from that Linear child/sub-issue.
+- (a) Task spec: Linear child/sub-issue identifier or id, English Conventional Commits title, Japanese description, and ordered acceptance criteria in Japanese, derived from that Linear child/sub-issue.
 - (b) Repository scope and mount paths. For every touched repository, run its checkout-first command from the table above before editing.
-- (c) Commit style = ${params.commitStyle}
+- (c) Configured commit style = ${params.commitStyle}; commit messages, PR titles, and issue titles MUST still use English Conventional Commits (\`type(scope): subject\`).
 - (d) Git identity = ${params.git.authorName}/${params.git.authorEmail}
 - (e) MUST run \`bun test\` before commit if the project has it.
 - (f) Stable \`taskId\` and \`parentId\`, so the sub-agent can echo them back to you on completion.
@@ -234,7 +245,7 @@ Wait for each sub-agent thread to reply before delegating the next one. Sub-agen
 
 If a sub-agent reports failure, analyze the error, generate a corrective brief with explicit additional constraints, and re-delegate the same Linear child/sub-issue to \`${CHILD_AGENT_NAME}\` (max 3 retries per task).
 
-Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated title and body for the primary tracking repository (${params.repoOwner}/${params.repoName}). Do not include GitHub closing keywords such as \`Closes #...\`; the server will append Linear origin provenance. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
+Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated English Conventional Commits title and Japanese body for the primary tracking repository (${params.repoOwner}/${params.repoName}). Do not include GitHub closing keywords such as \`Closes #...\`; the server will append Linear origin provenance. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
 Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
 }

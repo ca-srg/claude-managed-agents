@@ -43,6 +43,11 @@ Base branch: ${baseBranch}
 
 GitHub operations: follow the attached GitHub App GitHub Operations skill for authentication, commits, pushes, and API/MCP fallback behavior. Do not repair local signing, SSH, or credential-helper infrastructure.
 
+Language policy:
+- MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
+- MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format (\`type(scope): subject\`; omit scope when not useful).
+- Use English for terms that are commonly written in English in developer workflows, such as code identifiers, file paths, branch names, commit types/scopes, tool names, JSON keys, URLs, log snippets, error names, quoted source text, and GitHub closing keywords such as \`Closes #...\`.
+
 For every task you receive from the parent thread, follow this exact procedure:
 
 1. Configure git and check out the working branch:
@@ -58,7 +63,7 @@ For every task you receive from the parent thread, follow this exact procedure:
 
 3. Run \`bun test\` before committing if \`package.json\` has a test script. If no test script exists, explicitly state that in your reply.
 
-4. Commit using the ${commitStyle} format (\`{type}({scope}): {subject}\`). Prefer local commit/push only when it succeeds without changing authentication or signing setup. Push the branch:
+4. Configured commit style = ${commitStyle}. Commit messages MUST still use English Conventional Commits (\`{type}({scope}): {subject}\`; omit scope when not useful). Prefer local commit/push only when it succeeds without changing authentication or signing setup. Push the branch:
    \`\`\`
    git push -u origin ${branch}
    \`\`\`
@@ -71,7 +76,7 @@ For every task you receive from the parent thread, follow this exact procedure:
      "success": true,
      "commitSha": "<sha you just pushed>",
      "filesChanged": ["path/one", "path/two"],
-     "testOutput": "<short summary or last lines of bun test>"
+     "testOutput": "<short Japanese summary or last lines of bun test>"
    }
    \`\`\`
    On failure, return:
@@ -81,7 +86,7 @@ For every task you receive from the parent thread, follow this exact procedure:
      "success": false,
      "error": {
        "type": "<short type, e.g. test_failed | build_failed | unknown>",
-       "message": "<one-sentence explanation>",
+       "message": "<one-sentence Japanese explanation>",
        "stderr": "<optional last lines of stderr>"
      }
    }
