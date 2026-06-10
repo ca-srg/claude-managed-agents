@@ -724,6 +724,8 @@ type RepoChatThreadSummaryRow = {
 };
 
 type PreparedStatements = {
+  deletePromptByKey: StatementLike<unknown, [PromptKey]>;
+  deletePromptRevisionsByKey: StatementLike<unknown, [PromptKey]>;
   deleteSubIssuesByRun: StatementLike<unknown, [string]>;
   getPromptByKey: StatementLike<PromptWithBodyRow, [PromptKey]>;
   getPromptCurrentRevisionByKey: StatementLike<PromptCurrentRevisionRow, [PromptKey]>;
@@ -940,6 +942,10 @@ type PreparedRuntime = {
   ) => void;
   deleteRepoPromptTransaction: (
     input: { agent: RepoPromptAgent; repo: string },
+    setResult: (result: { deleted: boolean }) => void,
+  ) => void;
+  deletePromptTransaction: (
+    key: PromptKey,
     setResult: (result: { deleted: boolean }) => void,
   ) => void;
   seedPromptIfMissingTransaction: (
@@ -1349,6 +1355,8 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     backfillRepositoryTables();
 
     const statements: PreparedStatements = {
+      deletePromptByKey: db.query("DELETE FROM prompts WHERE prompt_key = ?1"),
+      deletePromptRevisionsByKey: db.query("DELETE FROM prompt_revisions WHERE prompt_key = ?1"),
       deleteSubIssuesByRun: db.query("DELETE FROM sub_issues WHERE run_id = ?1"),
       getPromptByKey: db.query<PromptWithBodyRow, [PromptKey]>(
         `SELECT
@@ -2706,6 +2714,21 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
       },
     );
 
+    const deletePromptTransaction = db.transaction(
+      (key: PromptKey, setResult: (result: { deleted: boolean }) => void) => {
+        const promptRow = statements.getPromptRowByKey.get(key);
+
+        if (promptRow == null) {
+          setResult({ deleted: false });
+          return;
+        }
+
+        statements.deletePromptByKey.run(key);
+        statements.deletePromptRevisionsByKey.run(key);
+        setResult({ deleted: true });
+      },
+    );
+
     function insertRepoEnvironmentRevisionRow(input: {
       now: string;
       packagesJson: string;
@@ -2947,6 +2970,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     );
 
     runtime = {
+      deletePromptTransaction,
       deleteRepoEnvironmentTransaction,
       deleteRepoPromptTransaction,
       replaceRunAndSubIssues,
@@ -3452,6 +3476,21 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
 
     if (result === null) {
       throw new Error("Prompt restore did not complete");
+    }
+
+    return result;
+  }
+
+  function deletePrompt(key: PromptKey): { deleted: boolean } {
+    const parsedKey = PromptKeySchema.parse(key);
+    let result: { deleted: boolean } | null = null;
+
+    getRuntime().deletePromptTransaction(parsedKey, (nextResult) => {
+      result = nextResult;
+    });
+
+    if (result === null) {
+      throw new Error("Prompt delete did not complete");
     }
 
     return result;
@@ -4424,6 +4463,7 @@ export function createDbModule(dbPath?: string, overrides: Partial<DbModuleDepen
     createRepoChatThread,
     createMcpServer,
     deleteMcpServer,
+    deletePrompt,
     deleteRepoEnvironment,
     deleteRepoPrompt,
     getAgentRegistryState,

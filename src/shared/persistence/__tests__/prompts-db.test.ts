@@ -182,6 +182,20 @@ describe("prompt repository DB functions", () => {
     expect(revision?.bodySha256).toBe(sha256(normalizedBody));
   });
 
+  test("deletePrompt removes the prompt row and its revisions", () => {
+    dbModule.seedPromptIfMissing(PARENT_KEY, BODY_A);
+    dbModule.savePromptRevision({ body: BODY_B, key: PARENT_KEY, source: "edit" });
+
+    expect(dbModule.deletePrompt(PARENT_KEY)).toEqual({ deleted: true });
+
+    expect(dbModule.getPrompt(PARENT_KEY)).toBeNull();
+    expect(dbModule.getPromptRevisions(PARENT_KEY)).toHaveLength(0);
+  });
+
+  test("deletePrompt returns deleted false when the prompt row does not exist", () => {
+    expect(dbModule.deletePrompt(PARENT_KEY)).toEqual({ deleted: false });
+  });
+
   test("invalid input throws zod errors for empty and too long bodies", () => {
     expect(() =>
       dbModule.savePromptRevision({ body: "", key: PARENT_KEY, source: "edit" }),

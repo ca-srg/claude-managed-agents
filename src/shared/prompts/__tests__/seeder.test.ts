@@ -23,12 +23,8 @@ type TestDatabaseConstructor = new (databasePath: string) => TestDatabase;
 const require = createRequire(import.meta.url);
 const { Database } = require("bun:sqlite") as { Database: TestDatabaseConstructor };
 
-const PROMPT_KEYS: PromptKey[] = [
-  "parent.system",
-  "child.system",
-  "parent.runtime",
-  "child.runtime",
-];
+const SEEDED_PROMPT_KEYS: PromptKey[] = ["parent.system", "child.system"];
+const RUNTIME_PROMPT_KEYS: PromptKey[] = ["parent.runtime", "child.runtime"];
 
 function createCapturedDbModule(): {
   dbModule: ReturnType<typeof createDbModule>;
@@ -81,8 +77,22 @@ function getSeedRevisionCount(db: TestDatabase): number {
   return row.seedCount;
 }
 
+function getRuntimeRevisionCount(db: TestDatabase): number {
+  const row = db
+    .query<{ runtimeCount: number }>(
+      "SELECT COUNT(*) AS runtimeCount FROM prompt_revisions WHERE prompt_key IN ('parent.runtime', 'child.runtime')",
+    )
+    .get();
+
+  if (row == null) {
+    throw new Error("Failed to count runtime prompt revisions");
+  }
+
+  return row.runtimeCount;
+}
+
 describe("seedDefaultPrompts", () => {
-  test("seeds all default prompts once and is idempotent", async () => {
+  test("seeds editable default prompts once and is idempotent", async () => {
     const { dbModule, getDb } = createCapturedDbModule();
     const { infoCalls, logger } = createLogger();
 
@@ -91,14 +101,40 @@ describe("seedDefaultPrompts", () => {
 
       const first = await seedDefaultPrompts({ db: dbModule, logger });
 
-      expect(first.seeded).toEqual(PROMPT_KEYS);
-      expect(PROMPT_KEYS.map((key) => dbModule.getPrompt(key)?.promptKey)).toEqual(PROMPT_KEYS);
+      expect(first.seeded).toEqual(SEEDED_PROMPT_KEYS);
+      expect(SEEDED_PROMPT_KEYS.map((key) => dbModule.getPrompt(key)?.promptKey)).toEqual(
+        SEEDED_PROMPT_KEYS,
+      );
+
+      for (const key of RUNTIME_PROMPT_KEYS) {
+        expect(dbModule.getPrompt(key)).toBeNull();
+      }
 
       const second = await seedDefaultPrompts({ db: dbModule, logger });
 
       expect(second.seeded).toEqual([]);
-      expect(getSeedRevisionCount(getDb())).toBe(4);
+      expect(getSeedRevisionCount(getDb())).toBe(2);
       expect(infoCalls).toHaveLength(1);
+    } finally {
+      dbModule.close();
+    }
+  });
+
+  test("removes stale runtime prompt rows seeded by older versions", async () => {
+    const { dbModule, getDb } = createCapturedDbModule();
+    const { logger } = createLogger();
+
+    try {
+      dbModule.initDb();
+      dbModule.seedPromptIfMissing("parent.runtime", "Stale parent runtime template body");
+      dbModule.seedPromptIfMissing("child.runtime", "Stale child runtime template body");
+
+      await seedDefaultPrompts({ db: dbModule, logger });
+
+      for (const key of RUNTIME_PROMPT_KEYS) {
+        expect(dbModule.getPrompt(key)).toBeNull();
+      }
+      expect(getRuntimeRevisionCount(getDb())).toBe(0);
     } finally {
       dbModule.close();
     }
