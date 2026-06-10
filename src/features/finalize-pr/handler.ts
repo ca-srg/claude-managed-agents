@@ -81,6 +81,7 @@ function buildSubIssuesSummary(
   runState: RunState,
 ): readonly SubIssueSummary[] {
   return runState.subIssues.map((subIssue) => ({
+    issueNumber: subIssue.issueNumber,
     title: `Sub-issue #${subIssue.issueNumber}`,
     url: `https://github.com/${owner}/${repo}/issues/${subIssue.issueNumber}`,
   }));

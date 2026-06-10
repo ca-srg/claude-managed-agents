@@ -84,13 +84,19 @@ function defaultBuildPRBody(
             "$1",
           )
           .trim();
-  const subIssueLines = subIssuesSummary.map(
-    (subIssue) => `- [${subIssue.title}](${subIssue.url})`,
-  );
   const sections = [normalizedUserBody];
 
-  if (subIssueLines.length > 0) {
-    sections.push(["## Sub-issues", ...subIssueLines].join("\n"));
+  if (subIssuesSummary.length > 0) {
+    sections.push(
+      [
+        "## Sub-issues",
+        ...subIssuesSummary.map((subIssue) =>
+          typeof subIssue.issueNumber === "number"
+            ? `- Closes #${subIssue.issueNumber}`
+            : `- [${subIssue.title}](${subIssue.url})`,
+        ),
+      ].join("\n"),
+    );
   }
 
   if (originSection.trim().length > 0) {
@@ -250,6 +256,10 @@ function countClosingLines(body: string, issueNumber: number): number {
   return body.match(new RegExp(`^Closes #${issueNumber}$`, "gm"))?.length ?? 0;
 }
 
+function countClosingReferences(body: string, issueNumber: number): number {
+  return body.match(new RegExp(`\\bCloses #${issueNumber}\\b`, "g"))?.length ?? 0;
+}
+
 beforeEach(() => {
   buildPRBodyCalls.length = 0;
   createOrUpdatePRCalls.length = 0;
@@ -370,11 +380,11 @@ describe("handleCreateFinalPr", () => {
     }
 
     expect(countClosingLines(requestBody, 42)).toBe(1);
-    expect(requestBody).toContain("#101");
-    expect(requestBody).toContain("#102");
+    expect(countClosingReferences(requestBody, 101)).toBe(1);
+    expect(countClosingReferences(requestBody, 102)).toBe(1);
   });
 
-  test("sub-issue summary list appears in body", async () => {
+  test("sub-issue closing lines appear in body", async () => {
     createOrUpdatePRImpl = async (_octokit, _options): Promise<CreateOrUpdatePRResult> => ({
       prNumber: 80,
       prUrl: "https://github.com/acme/widgets/pull/80",
@@ -389,8 +399,14 @@ describe("handleCreateFinalPr", () => {
     }
 
     expect(requestBody).toContain("## Sub-issues");
-    expect(requestBody).toContain("[Sub-issue #101](https://github.com/acme/widgets/issues/101)");
-    expect(requestBody).toContain("[Sub-issue #102](https://github.com/acme/widgets/issues/102)");
+    expect(requestBody).toContain("- Closes #101");
+    expect(requestBody).toContain("- Closes #102");
+    expect(requestBody).not.toContain(
+      "[Sub-issue #101](https://github.com/acme/widgets/issues/101)",
+    );
+    expect(requestBody).not.toContain(
+      "[Sub-issue #102](https://github.com/acme/widgets/issues/102)",
+    );
   });
 
   test("appends the Claude Managed Agents session URL at the bottom", async () => {
