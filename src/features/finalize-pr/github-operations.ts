@@ -17,6 +17,7 @@ export type PR = {
 };
 
 export type SubIssueSummary = {
+  issueNumber?: number;
   title: string;
   url: string;
 };
@@ -46,12 +47,21 @@ function normalizeHeadFilter(owner: string, head: string): string {
   return head.includes(":") ? head : `${owner}:${head}`;
 }
 
-function buildSubIssuesSection(subIssuesSummary: readonly SubIssueSummary[]): string {
+function buildSubIssuesSection(
+  subIssuesSummary: readonly SubIssueSummary[],
+  shouldCloseSubIssues: boolean,
+): string {
   if (subIssuesSummary.length === 0) {
     return "";
   }
 
-  const summaryLines = subIssuesSummary.map((subIssue) => `- [${subIssue.title}](${subIssue.url})`);
+  const summaryLines = subIssuesSummary.map((subIssue) => {
+    if (shouldCloseSubIssues && typeof subIssue.issueNumber === "number") {
+      return `- Closes #${subIssue.issueNumber}`;
+    }
+
+    return `- [${subIssue.title}](${subIssue.url})`;
+  });
   return ["## Sub-issues", ...summaryLines].join("\n");
 }
 
@@ -60,7 +70,7 @@ function escapeForRegExp(value: string): string {
 }
 
 function buildGitHubClosingReferencePattern(issueNumberPattern: string): string {
-  const issueNumberWithBoundary = `${issueNumberPattern}(?!\\d)`;
+  const issueNumberWithBoundary = `(?:${issueNumberPattern})(?!\\d)`;
   const shorthandReference = [
     `(?:${GITHUB_REPOSITORY_REFERENCE_PATTERN}\\s*)?`,
     `#\\s*${issueNumberWithBoundary}`,
@@ -81,9 +91,20 @@ function buildGitHubClosingReferencePattern(issueNumberPattern: string): string 
 function removeExistingClosingReferences(
   userBody: string,
   parentIssueNumber: number | null,
+  subIssueNumbers: readonly number[] = [],
 ): string {
+  const issueNumbersToNormalize =
+    parentIssueNumber === null
+      ? []
+      : Array.from(new Set([parentIssueNumber, ...subIssueNumbers])).sort((left, right) => {
+          return String(right).length - String(left).length;
+        });
   const issueNumberPattern =
-    parentIssueNumber === null ? "\\d+" : escapeForRegExp(String(parentIssueNumber));
+    parentIssueNumber === null
+      ? "\\d+"
+      : issueNumbersToNormalize
+          .map((issueNumber) => escapeForRegExp(String(issueNumber)))
+          .join("|");
   const closingReferencePattern = buildGitHubClosingReferencePattern(issueNumberPattern);
   const closingLinePattern = new RegExp(
     `(^|\\n)\\s*(?:[-*+]\\s*)?${closingReferencePattern}\\s*[.,;:]?\\s*(?=\\n|$)`,
@@ -227,8 +248,18 @@ export function buildPRBody(
   sessionSection = "",
 ): string {
   const closingLine = parentIssueNumber === null ? "" : `Closes #${parentIssueNumber}`;
-  const normalizedUserBody = removeExistingClosingReferences(userBody, parentIssueNumber);
-  const subIssuesSection = buildSubIssuesSection(subIssuesSummary);
+  const shouldCloseSubIssues = parentIssueNumber !== null;
+  const subIssueNumbers = shouldCloseSubIssues
+    ? subIssuesSummary.flatMap((subIssue) =>
+        typeof subIssue.issueNumber === "number" ? [subIssue.issueNumber] : [],
+      )
+    : [];
+  const normalizedUserBody = removeExistingClosingReferences(
+    userBody,
+    parentIssueNumber,
+    subIssueNumbers,
+  );
+  const subIssuesSection = buildSubIssuesSection(subIssuesSummary, shouldCloseSubIssues);
   const tailSections = [subIssuesSection, originSection, closingLine, sessionSection];
   const completeBody = joinBodySections([normalizedUserBody, ...tailSections]);
 

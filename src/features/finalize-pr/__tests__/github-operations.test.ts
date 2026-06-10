@@ -76,6 +76,10 @@ function countClosingLines(body: string, issueNumber: number): number {
   return body.match(new RegExp(`^Closes #${issueNumber}$`, "gm"))?.length ?? 0;
 }
 
+function countClosingReferences(body: string, issueNumber: number): number {
+  return body.match(new RegExp(`\\bCloses #${issueNumber}\\b`, "g"))?.length ?? 0;
+}
+
 function createPullRequestPayload(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     body: "Initial body",
@@ -94,12 +98,16 @@ describe("buildPRBody", () => {
   const claudeSessionSection = ["## Claude Managed Agents session", claudeSessionUrl].join("\n");
 
   test("auto-appends Closes #N if missing from the user body", () => {
-    const body = buildPRBody("Summary", 42, [{ title: "Task 1", url: "http://x/1" }]);
+    const body = buildPRBody("Summary", 42, [
+      { issueNumber: 101, title: "Task 1", url: "http://x/1" },
+    ]);
 
     expect(body).toContain("Summary");
-    expect(body).toContain("Task 1");
-    expect(body).toContain("http://x/1");
+    expect(body).toContain("- Closes #101");
+    expect(body).not.toContain("Task 1");
+    expect(body).not.toContain("http://x/1");
     expect(countClosingLines(body, 42)).toBe(1);
+    expect(countClosingReferences(body, 101)).toBe(1);
   });
 
   test("keeps Closes #N exactly once when the user body already contains it", () => {
@@ -118,6 +126,20 @@ describe("buildPRBody", () => {
     expect(countClosingLines(body, 42)).toBe(1);
     expect(body).not.toContain("Fixes acme/widgets # 42");
     expect(body).toContain("Resolves #43");
+  });
+
+  test("normalizes existing closing keyword references for sub-issues", () => {
+    const userBody = ["Summary", "", "Fixes #101", "Details remain"].join("\n");
+
+    const body = buildPRBody(userBody, 42, [
+      { issueNumber: 101, title: "Task 1", url: "http://x/1" },
+      { issueNumber: 102, title: "Task 2", url: "http://x/2" },
+    ]);
+
+    expect(body).toContain("Details remain");
+    expect(body).not.toContain("Fixes #101");
+    expect(countClosingReferences(body, 101)).toBe(1);
+    expect(countClosingReferences(body, 102)).toBe(1);
   });
 
   test("strips all GitHub closing keyword references for Linear-origin bodies", () => {
