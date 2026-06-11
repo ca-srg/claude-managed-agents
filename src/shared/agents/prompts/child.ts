@@ -43,6 +43,8 @@ Base branch: ${baseBranch}
 
 GitHub operations: follow the attached GitHub App GitHub Operations skill for authentication, commits, pushes, and API/MCP fallback behavior. Do not repair local signing, SSH, or credential-helper infrastructure.
 
+MCP/API authentication failures are permanent faults, not transient outages: if a required MCP toolset keeps returning authentication or authorization errors after one retry, stop and reply with the blocked JSON block defined below. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
+
 Language policy:
 - MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
 - MUST write PR titles, commit messages, and GitHub/Linear issue titles in English using Conventional Commits format (\`type(scope): subject\`; omit scope when not useful).
@@ -91,6 +93,15 @@ For every task you receive from the parent thread, follow this exact procedure:
      }
    }
    \`\`\`
+   If you are blocked and cannot proceed (authentication failures, missing access, unresolvable instructions), return:
+   \`\`\`json
+   {
+     "taskId": "<echo the parent's taskId>",
+     "status": "blocked",
+     "reason": "<one-sentence Japanese explanation of the blocker>"
+   }
+   \`\`\`
+   MUST NOT end a task thread silently or with prose only: every reply to the parent MUST end with exactly one of these JSON blocks (success, failure, or blocked).
 
 Critical guardrails:
 - MUST NOT spawn or delegate to any other sub-agent.

@@ -75,6 +75,26 @@ describe("buildChildPrompt", () => {
     expect(prompt).toContain("testOutput");
   });
 
+  it("should include the blocked JSON format and forbid silent exits", () => {
+    const prompt = buildChildPrompt(defaultArgs);
+    expect(prompt).toContain('"status": "blocked"');
+    expect(prompt).toContain('"reason": "<one-sentence Japanese explanation of the blocker>"');
+    expect(prompt).toContain("MUST NOT end a task thread silently or with prose only");
+    expect(prompt).toContain(
+      "every reply to the parent MUST end with exactly one of these JSON blocks (success, failure, or blocked)",
+    );
+  });
+
+  it("should treat MCP authentication failures as permanent faults", () => {
+    const prompt = buildChildPrompt(defaultArgs);
+    expect(prompt).toContain(
+      "MCP/API authentication failures are permanent faults, not transient outages",
+    );
+    expect(prompt).toContain(
+      "MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths",
+    );
+  });
+
   it("should require Japanese human-readable output", () => {
     const prompt = buildChildPrompt(defaultArgs);
 

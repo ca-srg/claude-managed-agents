@@ -66,6 +66,18 @@ describe("buildParentPrompt", () => {
       "If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping",
     );
     expect(prompt).toContain(
+      "MCP/API authentication failures are permanent faults, not transient outages",
+    );
+    expect(prompt).toContain(
+      "MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths",
+    );
+    expect(prompt).toContain(
+      'If a sub-agent replies with `"status": "blocked"`, treat environmental blockers (authentication failures, missing access, unavailable tooling) as permanent',
+    );
+    expect(prompt).toContain(
+      "do NOT treat the missing data as a pass — report the blocker in your final `agent.message` and stop instead of approving",
+    );
+    expect(prompt).toContain(
       "Emit a final `agent.message` containing the resulting PR URL and stop",
     );
     expect(prompt).toContain("MUST NOT edit files directly");
