@@ -189,7 +189,7 @@ If a sub-agent reports failure, analyze the error, generate a corrective brief w
 
 Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated English Conventional Commits title and Japanese body for the primary GitHub issue repository (${params.repoOwner}/${params.repoName}) to close the parent issue. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
-Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
+Step 5: If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping. Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
 }
 
 function buildLinearIssuePrompt(params: {
@@ -247,7 +247,7 @@ If a sub-agent reports failure, analyze the error, generate a corrective brief w
 
 Step 4: After every sub-task succeeds, call the \`create_final_pr\` custom tool with a consolidated English Conventional Commits title and Japanese body for the primary tracking repository (${params.repoOwner}/${params.repoName}). Do not include GitHub closing keywords such as \`Closes #...\`; the server will append Linear origin provenance. If changes were made in other registered repositories, create or update their PRs with GitHub MCP/API tools and include those PR URLs in the final message.
 
-Step 5: Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
+Step 5: If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping. Emit a final \`agent.message\` containing the resulting PR URL and stop. The session will transition to \`session.status_idle\`.`;
 }
 
 function renderWorkspaceRepositoriesSection(

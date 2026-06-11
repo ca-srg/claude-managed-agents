@@ -63,6 +63,9 @@ describe("buildParentPrompt", () => {
       "English Conventional Commits title, Japanese description, and ordered acceptance criteria in Japanese",
     );
     expect(prompt).toContain(
+      "If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping",
+    );
+    expect(prompt).toContain(
       "Emit a final `agent.message` containing the resulting PR URL and stop",
     );
     expect(prompt).toContain("MUST NOT edit files directly");

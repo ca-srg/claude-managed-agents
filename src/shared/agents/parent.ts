@@ -71,9 +71,12 @@ export type ParentMultiagentRoster = NonNullable<AgentCreateParams["multiagent"]
 /** Tool entries that appear on the parent regardless of MCP configuration. */
 export type ParentCustomTools = ReadonlyArray<BetaManagedAgentsCustomToolParams>;
 
-const SKILL_READ_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
+const PARENT_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   type: AGENT_TOOLSET_VERSION,
-  // Skills require the built-in read tool at session creation; keep the parent otherwise read-only.
+  // Skills require the built-in read tool at session creation. Bash is enabled because the
+  // parent prompt mandates git/gh inspection and CI polling; glob/grep support read-only
+  // repository inspection when decomposing issues. Edit/write stay disabled so the
+  // coordinator cannot modify files directly (implementation is delegated to the child).
   default_config: {
     enabled: false,
     permission_policy: { type: "always_allow" },
@@ -81,6 +84,21 @@ const SKILL_READ_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   configs: [
     {
       name: "read",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+    {
+      name: "bash",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+    {
+      name: "glob",
+      enabled: true,
+      permission_policy: { type: "always_allow" },
+    },
+    {
+      name: "grep",
       enabled: true,
       permission_policy: { type: "always_allow" },
     },
@@ -124,7 +142,7 @@ export function buildParentDefinition(
     system: prompts.parent,
     skills: [...systemSkills],
     mcp_servers: mcpServerParams,
-    tools: [SKILL_READ_AGENT_TOOLSET, ...mcpToolsetParams, ...customTools],
+    tools: [PARENT_AGENT_TOOLSET, ...mcpToolsetParams, ...customTools],
     metadata: PARENT_METADATA,
     multiagent,
   };
