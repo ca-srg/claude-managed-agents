@@ -520,9 +520,11 @@ function registerGitHubAppTokenRefresh(options: {
  * GitHub MCP vault credentials are `static_bearer` tokens baked from a GitHub
  * App installation token (1h lifetime), so an authentication failure usually
  * means the token expired mid-session. The fallback re-mints the installation
- * token and rewrites the GitHub vault credentials; Anthropic re-resolves
- * credentials periodically, so the next MCP call picks up the fresh token.
- * Failures from non-GitHub MCP servers are ignored.
+ * token, rewrites the GitHub vault credentials, and updates the session's
+ * `github_repository` resources, which hold the same expired token (otherwise
+ * MCP calls would recover while in-session git operations kept failing).
+ * Anthropic re-resolves credentials periodically, so the next MCP call picks
+ * up the fresh token. Failures from non-GitHub MCP servers are ignored.
  */
 function createGitHubMcpAuthFailureFallback(options: {
   anthropicClient: AnthropicClientLike;
@@ -532,6 +534,7 @@ function createGitHubMcpAuthFailureFallback(options: {
   logger: Logger;
   onAccessRefreshed: (access: GitHubRepositoryAccess) => void;
   repositories: readonly RepoRef[];
+  repoResourceIds: readonly string[];
   sessionId: string;
   updateMcpCredentialToken?: typeof updateMcpCredentialToken;
   vaultId: string;
@@ -559,19 +562,30 @@ function createGitHubMcpAuthFailureFallback(options: {
     }
 
     options.onAccessRefreshed(refreshed);
-    await Promise.all(
-      options.credentialIds().map((credentialId) =>
+    const updates: Promise<unknown>[] = options.credentialIds().map(
+      (credentialId) =>
         options.updateMcpCredentialToken?.(options.anthropicClient, {
           credentialId,
           token: refreshed.authorizationToken,
           vaultId: options.vaultId,
-        }),
-      ),
+        }) ?? Promise.resolve(),
     );
+    if (options.anthropicClient.beta.sessions.resources?.update) {
+      for (const repoResourceId of options.repoResourceIds) {
+        updates.push(
+          options.anthropicClient.beta.sessions.resources.update(repoResourceId, {
+            authorization_token: refreshed.authorizationToken,
+            session_id: options.sessionId,
+          }),
+        );
+      }
+    }
+    await Promise.all(updates);
     options.logger.info(
       {
         credentialCount: options.credentialIds().length,
         mcpServerName,
+        repoResourceCount: options.repoResourceIds.length,
         sessionId: options.sessionId,
       },
       "Re-minted GitHub App installation token after MCP authentication failure",
@@ -1336,6 +1350,7 @@ export async function runIssueOrchestration(
         "failed to record parent session placeholder",
       );
     }
+    const parentRepoResourceIds = findGitHubRepositoryResourceIds(parentSession);
     stopGitHubAppTokenRefresh = registerGitHubAppTokenRefresh({
       anthropicClient,
       credentialIds: () => [...githubMcpCredentialIds],
@@ -1347,7 +1362,7 @@ export async function runIssueOrchestration(
         octokit = access.octokit;
       },
       repositories: repositoryRefs,
-      repoResourceIds: findGitHubRepositoryResourceIds(parentSession),
+      repoResourceIds: parentRepoResourceIds,
       sessionId: parentSession.id,
       updateMcpCredentialToken: deps.updateMcpCredentialToken,
       vaultId: vault.vaultId,
@@ -1526,6 +1541,7 @@ export async function runIssueOrchestration(
         octokit = access.octokit;
       },
       repositories: repositoryRefs,
+      repoResourceIds: parentRepoResourceIds,
       sessionId: parentSession.id,
       updateMcpCredentialToken: deps.updateMcpCredentialToken,
       vaultId: vault.vaultId,

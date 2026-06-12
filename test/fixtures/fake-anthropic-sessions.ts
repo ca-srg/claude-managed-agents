@@ -9,6 +9,8 @@ import type { SessionCreateParams } from "@anthropic-ai/sdk/resources/beta/sessi
 type ScriptInstruction<TEvent> = TEvent | { error: Error; kind: "throw" } | { kind: "pending" };
 
 export type FakeAnthropicSessionScenario = {
+  /** Resources attached to every created session (e.g. github_repository). */
+  createResources?: Array<{ id: string; type: string }>;
   listScripts?: Array<ReadonlyArray<ScriptInstruction<BetaManagedAgentsSessionEvent>>>;
   onSend?: (params: EventSendParams, calls: FakeAnthropicSessionCalls) => void;
   sessionId?: string;
@@ -19,6 +21,10 @@ export type FakeAnthropicSessionCalls = {
   creates: SessionCreateParams[];
   deletes: string[];
   listCalls: Array<{ params?: EventListParams; sessionId: string }>;
+  resourceUpdates: Array<{
+    params: { authorization_token: string; session_id: string };
+    resourceId: string;
+  }>;
   sends: Array<{ params: EventSendParams; sessionId: string }>;
   streamCalls: string[];
 };
@@ -87,7 +93,10 @@ export function createFakeAnthropicSessions(scenario: FakeAnthropicSessionScenar
   client: {
     beta: {
       sessions: {
-        create(params: SessionCreateParams): Promise<{ id: string }>;
+        create(params: SessionCreateParams): Promise<{
+          id: string;
+          resources?: Array<{ id: string; type: string }>;
+        }>;
         delete(sessionId: string): Promise<{ id: string; type: "session_deleted" }>;
         events: {
           list(
@@ -97,6 +106,12 @@ export function createFakeAnthropicSessions(scenario: FakeAnthropicSessionScenar
           send(sessionId: string, params: EventSendParams): Promise<{ ok: true }>;
           stream(sessionId: string): Promise<AsyncIterable<BetaManagedAgentsStreamSessionEvents>>;
         };
+        resources: {
+          update(
+            resourceId: string,
+            params: { authorization_token: string; session_id: string },
+          ): Promise<{ id: string }>;
+        };
       };
     };
   };
@@ -105,6 +120,7 @@ export function createFakeAnthropicSessions(scenario: FakeAnthropicSessionScenar
     creates: [],
     deletes: [],
     listCalls: [],
+    resourceUpdates: [],
     sends: [],
     streamCalls: [],
   };
@@ -121,6 +137,7 @@ export function createFakeAnthropicSessions(scenario: FakeAnthropicSessionScenar
 
           return {
             id: scenario.sessionId ?? `sess-${createCount}`,
+            ...(scenario.createResources ? { resources: scenario.createResources } : {}),
           };
         },
         async delete(sessionId: string) {
@@ -147,6 +164,16 @@ export function createFakeAnthropicSessions(scenario: FakeAnthropicSessionScenar
             calls.streamCalls.push(sessionId);
             const nextScript = queuedStreamScripts.shift() ?? [];
             return createScriptIterable(nextScript);
+          },
+        },
+        resources: {
+          async update(
+            resourceId: string,
+            params: { authorization_token: string; session_id: string },
+          ) {
+            calls.resourceUpdates.push({ params, resourceId });
+
+            return { id: resourceId };
           },
         },
       },

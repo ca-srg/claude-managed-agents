@@ -1388,7 +1388,17 @@ describe("runIssueOrchestration", () => {
       permissions: { contents: "write" },
       repositorySelection: "selected",
     };
+    const fakeAnthropic = createFakeAnthropicSessions({
+      createResources: [
+        { id: "rsrc-repo", type: "github_repository" },
+        { id: "rsrc-vault", type: "vault" },
+      ],
+      streamScripts: [],
+    });
     const harness = createHarness({
+      anthropicClient: fakeAnthropic.client as unknown as NonNullable<
+        RunExecutionDeps["anthropicClient"]
+      >,
       ensureMcpCredentials: (async () => [
         { credentialId: "cred-github", managedByUs: true, mcpServerUrl: GITHUB_MCP_URL },
         { credentialId: "cred-linear", managedByUs: true, mcpServerUrl: LINEAR_MCP_URL },
@@ -1438,6 +1448,15 @@ describe("runIssueOrchestration", () => {
     expect(refreshCalls).toEqual([{ owner: "owner", repo: "name" }]);
     expect(credentialUpdates).toEqual([
       { credentialId: "cred-github", token: "ghs_refreshed_token", vaultId: "vault-1" },
+    ]);
+    // The session's github_repository resources hold the same expired token,
+    // so the fallback must rewrite them too — only MCP calls would recover
+    // otherwise, while in-session git operations kept failing.
+    expect(fakeAnthropic.calls.resourceUpdates).toEqual([
+      {
+        params: { authorization_token: "ghs_refreshed_token", session_id: "sess-1" },
+        resourceId: "rsrc-repo",
+      },
     ]);
   });
 
