@@ -77,8 +77,15 @@ describe("buildChildPrompt", () => {
 
   it("should include the blocked JSON format and forbid silent exits", () => {
     const prompt = buildChildPrompt(defaultArgs);
+    expect(prompt).toContain("task instructions are unclear, contradictory, or unresolvable");
+    expect(prompt).toContain("`error.type` set to `unresolvable_instructions`");
+    expect(prompt).toContain("so the parent can correct and retry the task");
+    expect(prompt).toContain("blocked by environment/access/tooling");
     expect(prompt).toContain('"status": "blocked"');
     expect(prompt).toContain('"reason": "<one-sentence Japanese explanation of the blocker>"');
+    expect(prompt).not.toContain(
+      "authentication failures, missing access, unresolvable instructions",
+    );
     expect(prompt).toContain("MUST NOT end a task thread silently or with prose only");
     expect(prompt).toContain(
       "every reply to the parent MUST end with exactly one of these JSON blocks (success, failure, or blocked)",

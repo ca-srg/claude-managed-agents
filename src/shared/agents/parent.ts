@@ -73,10 +73,10 @@ export type ParentCustomTools = ReadonlyArray<BetaManagedAgentsCustomToolParams>
 
 const PARENT_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   type: AGENT_TOOLSET_VERSION,
-  // Skills require the built-in read tool at session creation. Bash is enabled because the
-  // parent prompt mandates git/gh inspection and CI polling; glob/grep support read-only
-  // repository inspection when decomposing issues. Edit/write stay disabled so the
-  // coordinator cannot modify files directly (implementation is delegated to the child).
+  // Skills require the built-in read tool at session creation. Keep the parent on
+  // read-only built-ins only: a shell can mutate the mounted workspace, commit, push,
+  // or open PRs even when edit/write built-ins are disabled, which would break the
+  // coordinator/implementer boundary under untrusted issue or repo instructions.
   default_config: {
     enabled: false,
     permission_policy: { type: "always_allow" },
@@ -84,11 +84,6 @@ const PARENT_AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   configs: [
     {
       name: "read",
-      enabled: true,
-      permission_policy: { type: "always_allow" },
-    },
-    {
-      name: "bash",
       enabled: true,
       permission_policy: { type: "always_allow" },
     },

@@ -93,6 +93,7 @@ export type SessionResult = {
   errored: boolean;
   eventsProcessed: number;
   idleReached: boolean;
+  lastAgentMessageText?: string;
   lastEventId: string | undefined;
   /**
    * Model identifier used for cost attribution (e.g. `claude-fable-5`).
@@ -200,6 +201,7 @@ class SessionReconnectError extends Error {
 
 function previewAgentMessageText(event: BetaManagedAgentsAgentMessageEvent): {
   preview: string;
+  text: string;
   truncated: boolean;
 } | null {
   const messageContent = event.content;
@@ -224,11 +226,12 @@ function previewAgentMessageText(event: BetaManagedAgentsAgentMessageEvent): {
   }
 
   if (concatenatedText.length <= PREVIEW_CHAR_LIMIT) {
-    return { preview: concatenatedText, truncated: false };
+    return { preview: concatenatedText, text: concatenatedText, truncated: false };
   }
 
   return {
     preview: `${concatenatedText.slice(0, PREVIEW_CHAR_LIMIT)}…`,
+    text: concatenatedText,
     truncated: true,
   };
 }
@@ -597,6 +600,7 @@ export async function runSession(
   let errored = false;
   let eventsProcessed = 0;
   let idleReached = false;
+  let lastAgentMessageText: string | undefined;
   let lastEventId: string | undefined;
   let reconnectAttempts = 0;
   let reconnectNeedsReplay = false;
@@ -992,6 +996,7 @@ export async function runSession(
     if (event.type === "agent.message") {
       const messagePreview = previewAgentMessageText(event);
       if (messagePreview !== null) {
+        lastAgentMessageText = messagePreview.text;
         sessionLogger.info(
           {
             eventId: event.id,
@@ -1362,6 +1367,7 @@ export async function runSession(
     errored,
     eventsProcessed,
     idleReached,
+    ...(lastAgentMessageText === undefined ? {} : { lastAgentMessageText }),
     lastEventId,
     model: options.model,
     sessionId: options.sessionId,

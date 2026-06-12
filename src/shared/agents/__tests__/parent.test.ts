@@ -119,11 +119,6 @@ describe("buildParentDefinition", () => {
           },
           {
             enabled: true,
-            name: "bash",
-            permission_policy: { type: "always_allow" },
-          },
-          {
-            enabled: true,
             name: "glob",
             permission_policy: { type: "always_allow" },
           },

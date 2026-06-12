@@ -762,7 +762,7 @@ describe("runSession", () => {
     });
     const { lines, logger } = createCapturingLogger();
 
-    await runSession(client, {
+    const result = await runSession(client, {
       handlers: {},
       logger,
       sessionId: "sesn-msg-1",
@@ -780,6 +780,7 @@ describe("runSession", () => {
     expect(messageLogLine.preview).toBe(messageBody);
     expect(messageLogLine.truncated).toBe(false);
     expect(typeof messageLogLine.previewCharLimit).toBe("number");
+    expect(result.lastAgentMessageText).toBe(messageBody);
   });
 
   test("agent.message with oversize text content marks preview truncated and ends with ellipsis", async () => {

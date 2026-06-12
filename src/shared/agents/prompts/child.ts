@@ -87,13 +87,14 @@ For every task you receive from the parent thread, follow this exact procedure:
      "taskId": "<echo the parent's taskId>",
      "success": false,
      "error": {
-       "type": "<short type, e.g. test_failed | build_failed | unknown>",
+       "type": "<short type, e.g. test_failed | build_failed | unresolvable_instructions | unknown>",
        "message": "<one-sentence Japanese explanation>",
        "stderr": "<optional last lines of stderr>"
      }
    }
    \`\`\`
-   If you are blocked and cannot proceed (authentication failures, missing access, unresolvable instructions), return:
+   If the task instructions are unclear, contradictory, or unresolvable, use the failure schema above with \`error.type\` set to \`unresolvable_instructions\` so the parent can correct and retry the task.
+   If you are blocked by environment/access/tooling and cannot proceed (authentication failures after retries, missing access, unavailable tooling), return:
    \`\`\`json
    {
      "taskId": "<echo the parent's taskId>",

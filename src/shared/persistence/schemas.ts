@@ -96,6 +96,7 @@ export const SessionResultSchema = z.object({
   errored: z.boolean(),
   eventsProcessed: NonNegativeIntegerSchema,
   idleReached: z.boolean(),
+  lastAgentMessageText: NonEmptyStringSchema.optional(),
   lastEventId: z.union([NonEmptyStringSchema, z.undefined()]),
   /**
    * Model identifier used for cost attribution (e.g. `claude-fable-5`).

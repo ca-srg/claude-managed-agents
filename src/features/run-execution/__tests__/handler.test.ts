@@ -485,6 +485,59 @@ describe("runIssueOrchestration", () => {
     expect(harness.db.runs.at(-1)?.prUrl).toBe("https://github.com/owner/name/pull/34");
   });
 
+  test("agent-reported blocker after final PR marks run failed and preserves PR URL", async () => {
+    const prUrl = "https://github.com/owner/name/pull/56";
+    const harness = createHarness({
+      handleCreateFinalPr: (async () => ({
+        prNumber: 56,
+        prUrl,
+        success: true,
+        updated: false,
+      })) as RunExecutionDeps["handleCreateFinalPr"],
+      runSession: (async (_client, options) => {
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
+
+        return buildSessionResult({
+          lastAgentMessageText: [
+            `PR: ${prUrl}`,
+            "Run status: blocked",
+            "Blocker type: post_pr_followup_unavailable",
+            "CI/review follow-up data could not be fetched.",
+          ].join("\n"),
+          sessionId: options.sessionId,
+        });
+      }) as RunExecutionDeps["runSession"],
+    });
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-post-pr-blocked" },
+      harness.deps,
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.prUrl).toBe(prUrl);
+    expect(result.errored).toEqual(
+      expect.objectContaining({
+        type: "agent_reported_blocker",
+      }),
+    );
+    expect(result.errored?.message).toContain("post_pr_followup_unavailable");
+    expect(harness.db.runs.at(-1)?.prUrl).toBe(prUrl);
+    expect(harness.db.statuses.at(-1)).toEqual({
+      runId: "run-post-pr-blocked",
+      status: "failed",
+    });
+  });
+
   test("abort after create_sub_issue success still syncs sub-issues to DB", async () => {
     const toolAbortController = new AbortController();
     const syncedSubIssue = { issueId: 802, issueNumber: 62, taskId: "task-abort-after" };
