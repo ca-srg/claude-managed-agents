@@ -8,7 +8,6 @@ import type { handleCreateFinalPr } from "@/features/finalize-pr/handler";
 import type { runPreflight } from "@/features/preflight/validate";
 import type { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
 import type { ParentCustomTools } from "@/shared/agents/parent";
-import type { buildChildPrompt } from "@/shared/agents/prompts/child";
 import type { buildParentPrompt } from "@/shared/agents/prompts/parent";
 import type { EnsureAgents } from "@/shared/agents/registry";
 import type { Config, loadConfig } from "@/shared/config";
@@ -96,6 +95,7 @@ export type RunExecutionDb = Pick<
   | "insertSession"
   | "insertSessionPlaceholder"
   | "listMcpServers"
+  | "savePromptRevision"
   | "seedPromptIfMissing"
   | "setDefaultEnvironmentState"
   | "setRepoEnvironmentAnthropicState"
@@ -113,7 +113,6 @@ export type RunExecutionObservers = {
 export type RunExecutionDeps = {
   acquireRunLock: typeof acquireRunLock;
   anthropicClient?: AnthropicClientLike;
-  buildChildPrompt: typeof buildChildPrompt;
   buildParentPrompt: typeof buildParentPrompt;
   db?: RunExecutionDb;
   ensureAgents: EnsureAgents;

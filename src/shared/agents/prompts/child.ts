@@ -1,11 +1,11 @@
 import { CHILD_AGENT_NAME } from "@/shared/constants";
 
 /**
- * Child runtime prompt builder. Used as the system prompt for the
- * implementer agent. Per Managed Agents' multi-agent coordinator topology
- * the parent now delegates work via thread messages rather than spawning a
- * separate session, so the prompt only needs static guidance — branch name,
- * task spec, etc. arrive in subsequent thread messages from the parent.
+ * Child runtime prompt template builder shown as the read-only child.runtime
+ * prompt reference in the dashboard. Production implementer agents receive
+ * the editable child.system prompt from the DB; per Managed Agents'
+ * multi-agent coordinator topology the parent delegates work via thread
+ * messages rather than spawning a separate session.
  */
 export type BuildChildPromptArgs = {
   repoOwner: string;

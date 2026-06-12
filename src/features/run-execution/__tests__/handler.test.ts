@@ -106,6 +106,7 @@ function createMockDb() {
     },
     listMcpServers: () => [],
     deletePrompt: () => ({ deleted: false }),
+    savePromptRevision: () => ({ isNoChange: true, revisionId: 1 }),
     seedPromptIfMissing: () => ({ seeded: false }),
     setDefaultEnvironmentState: () => {},
     setRepoEnvironmentAnthropicState: () => {},
@@ -159,7 +160,6 @@ function createHarness(overrides: Partial<RunExecutionDeps> = {}) {
       callLog.push("acquireRunLock");
     },
     anthropicClient,
-    buildChildPrompt: ((_args) => "child prompt") as RunExecutionDeps["buildChildPrompt"],
     buildParentPrompt: ((args) =>
       `Parent prompt for #${args.parentIssueNumber}`) as RunExecutionDeps["buildParentPrompt"],
     db: db.db,

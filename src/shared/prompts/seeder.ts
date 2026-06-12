@@ -1,12 +1,24 @@
 import type { Logger } from "pino";
 
-import { GENERIC_CHILD_AGENT_PROMPT, GENERIC_PARENT_AGENT_PROMPT } from "@/shared/prompts/defaults";
+import {
+  childSystemPromptHasRequiredRules,
+  ensureChildSystemPromptRequiredRules,
+  GENERIC_CHILD_AGENT_PROMPT,
+  GENERIC_PARENT_AGENT_PROMPT,
+} from "@/shared/prompts/defaults";
 
 export type PromptKey = "parent.system" | "child.system" | "parent.runtime" | "child.runtime";
+type EditablePromptKey = "parent.system" | "child.system";
 
 export type SeedDeps = {
   db: {
     deletePrompt: (key: PromptKey) => { deleted: boolean };
+    getPrompt: (key: PromptKey) => { body: string } | null;
+    savePromptRevision: (input: {
+      body: string;
+      key: EditablePromptKey;
+      source: "edit" | "seed";
+    }) => { isNoChange: boolean; revisionId: number };
     seedPromptIfMissing: (key: PromptKey, defaultBody: string) => { seeded: boolean };
   };
   logger: Pick<Logger, "info" | "warn">;
@@ -33,6 +45,20 @@ export async function seedDefaultPrompts(deps: SeedDeps): Promise<{ seeded: Prom
     }
   }
 
+  const childPrompt = deps.db.getPrompt("child.system");
+  const upgraded: PromptKey[] = [];
+  if (childPrompt !== null && !childSystemPromptHasRequiredRules(childPrompt.body)) {
+    const result = deps.db.savePromptRevision({
+      body: ensureChildSystemPromptRequiredRules(childPrompt.body),
+      key: "child.system",
+      source: "seed",
+    });
+
+    if (!result.isNoChange) {
+      upgraded.push("child.system");
+    }
+  }
+
   const removed: PromptKey[] = [];
 
   for (const key of STALE_RUNTIME_KEYS) {
@@ -45,6 +71,13 @@ export async function seedDefaultPrompts(deps: SeedDeps): Promise<{ seeded: Prom
 
   if (seeded.length > 0) {
     deps.logger.info({ seeded }, "seeded default prompts");
+  }
+
+  if (upgraded.length > 0) {
+    deps.logger.info(
+      { upgraded },
+      "upgraded system prompts with required blocker/auth-retry rules",
+    );
   }
 
   if (removed.length > 0) {
