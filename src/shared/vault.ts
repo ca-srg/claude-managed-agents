@@ -38,6 +38,12 @@ export type EnsuredMcpCredential = {
   mcpServerUrl: string;
 };
 
+type McpCredentialAuthType = "mcp_oauth" | "static_bearer";
+
+type ExistingMcpCredential = EnsuredMcpCredential & {
+  authType: McpCredentialAuthType;
+};
+
 export type UpdateMcpCredentialTokenContext = {
   credentialId: string;
   token: string;
@@ -139,6 +145,14 @@ function requireCredentialUpdateApi(
   return credentialsApi.update;
 }
 
+function toEnsuredMcpCredential(credential: ExistingMcpCredential): EnsuredMcpCredential {
+  return {
+    credentialId: credential.credentialId,
+    managedByUs: credential.managedByUs,
+    mcpServerUrl: credential.mcpServerUrl,
+  };
+}
+
 export function createVaultModule(overrides: Partial<VaultModuleDependencies> = {}) {
   const dependencies: VaultModuleDependencies = {
     logger: createLogger({ level: "silent" }),
@@ -176,8 +190,10 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
    * Strategy: list existing credentials in the vault once and build a lookup
    * by `mcp_server_url`. For each requested server, reuse the matching
    * credential when present; otherwise create a new `static_bearer`
-   * credential. The bearer token is whatever the caller resolved
-   * (typically `process.env[server.tokenEnvName]`).
+   * credential. When the caller asks to refresh a bearer token, only an
+   * existing `static_bearer` credential is updated; `mcp_oauth` credentials
+   * are not rewritten as bearer credentials. The bearer token is whatever the
+   * caller resolved (typically `process.env[server.tokenEnvName]`).
    *
    * Credentials we create are tagged `managedByUs: true` for callers that need
    * to distinguish them from reused credentials. Credentials we reused are
@@ -199,7 +215,8 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
       "Ensuring MCP credentials",
     );
 
-    const existingByUrl = new Map<string, EnsuredMcpCredential>();
+    const existingByUrl = new Map<string, ExistingMcpCredential>();
+    const existingStaticBearerByUrl = new Map<string, ExistingMcpCredential>();
     for await (const credentialEntry of credentialsApi.list(context.vaultId)) {
       const credentialAuth = credentialEntry.auth;
       if (credentialAuth.type !== "static_bearer" && credentialAuth.type !== "mcp_oauth") {
@@ -209,23 +226,33 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
       const mcpServerUrl = credentialAuth.mcp_server_url;
       // First match wins. Anthropic does not return order guarantees, so if
       // there are duplicates the caller should clean them up out-of-band.
+      const existingCredential: ExistingMcpCredential = {
+        authType: credentialAuth.type,
+        credentialId: credentialEntry.id,
+        managedByUs: false,
+        mcpServerUrl,
+      };
       if (!existingByUrl.has(mcpServerUrl)) {
-        existingByUrl.set(mcpServerUrl, {
-          credentialId: credentialEntry.id,
-          managedByUs: false,
-          mcpServerUrl,
-        });
+        existingByUrl.set(mcpServerUrl, existingCredential);
+      }
+      if (credentialAuth.type === "static_bearer" && !existingStaticBearerByUrl.has(mcpServerUrl)) {
+        existingStaticBearerByUrl.set(mcpServerUrl, existingCredential);
       }
     }
 
     const ensured: EnsuredMcpCredential[] = [];
     for (const server of context.servers) {
-      const existing = existingByUrl.get(server.mcpServerUrl);
+      const bearerToken =
+        typeof server.token === "string" && server.token.length > 0 ? server.token : undefined;
+      const shouldRefreshBearerToken = server.updateExisting === true && bearerToken !== undefined;
+      const existing = shouldRefreshBearerToken
+        ? existingStaticBearerByUrl.get(server.mcpServerUrl)
+        : existingByUrl.get(server.mcpServerUrl);
       if (existing) {
-        if (server.updateExisting && typeof server.token === "string" && server.token.length > 0) {
+        if (shouldRefreshBearerToken && bearerToken !== undefined) {
           await requireCredentialUpdateApi(credentialsApi)(
             existing.credentialId,
-            buildCredentialUpdateParams({ token: server.token, vaultId: context.vaultId }),
+            buildCredentialUpdateParams({ token: bearerToken, vaultId: context.vaultId }),
           );
           logger.warn(
             {
@@ -236,17 +263,19 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
             "Updated existing MCP credential token; concurrent runs sharing this vault will overwrite each other's bearer token. Consider using a managed vault per run for repository-scoped credentials.",
           );
         }
+        const ensuredCredential = toEnsuredMcpCredential(existing);
         logger.info(
           {
-            credentialId: existing.credentialId,
-            managedByUs: existing.managedByUs,
+            authType: existing.authType,
+            credentialId: ensuredCredential.credentialId,
+            managedByUs: ensuredCredential.managedByUs,
             mcpServerUrl: server.mcpServerUrl,
             vaultId: context.vaultId,
           },
           "Reused existing MCP credential",
         );
-        ensured.push(existing);
-        context.onCredentialEnsured?.(existing);
+        ensured.push(ensuredCredential);
+        context.onCredentialEnsured?.(ensuredCredential);
         continue;
       }
 
@@ -279,7 +308,12 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
         managedByUs: true,
         mcpServerUrl: server.mcpServerUrl,
       };
-      existingByUrl.set(server.mcpServerUrl, ensuredCredential);
+      const existingCredential: ExistingMcpCredential = {
+        ...ensuredCredential,
+        authType: "static_bearer",
+      };
+      existingByUrl.set(server.mcpServerUrl, existingCredential);
+      existingStaticBearerByUrl.set(server.mcpServerUrl, existingCredential);
       ensured.push(ensuredCredential);
       context.onCredentialEnsured?.(ensuredCredential);
     }
