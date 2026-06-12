@@ -167,6 +167,23 @@ function createMcpConnectionErrorEvent(
   };
 }
 
+function createMcpAuthErrorEvent(
+  id: string,
+  mcpServerName: string,
+): Extract<BetaManagedAgentsSessionEvent, { type: "session.error" }> {
+  return {
+    error: {
+      mcp_server_name: mcpServerName,
+      message: `MCP server '${mcpServerName}' rejected the static bearer token`,
+      retry_status: { type: "exhausted" },
+      type: "mcp_authentication_failed_error",
+    },
+    id,
+    processed_at: PROCESSED_AT,
+    type: "session.error",
+  };
+}
+
 function createModelErrorEvent(
   id: string,
 ): Extract<BetaManagedAgentsSessionEvent, { type: "session.error" }> {
@@ -1179,6 +1196,7 @@ describe("runSession", () => {
 
   test("session.error from an MCP connection failure does not tear down the session", async () => {
     let finalPrCalls = 0;
+    const authFailures: Array<{ mcpServerName: string }> = [];
     const { calls, client } = createFakeSessionClient({
       streamScripts: [
         [
@@ -1198,6 +1216,9 @@ describe("runSession", () => {
         },
       },
       logger: createTestLogger(),
+      onMcpAuthenticationFailed: (info) => {
+        authFailures.push(info);
+      },
       sessionId: "sesn-mcp-error",
       timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
     });
@@ -1209,6 +1230,107 @@ describe("runSession", () => {
     expect(calls.listCalls).toHaveLength(0);
     expect(sessionResult.errored).toBe(false);
     expect(sessionResult.idleReached).toBe(true);
+    // Connection failures are not credential failures; the auth fallback must
+    // stay quiet so it cannot churn tokens on transient outages.
+    expect(authFailures).toEqual([]);
+  });
+
+  test("mcp_authentication_failed_error invokes onMcpAuthenticationFailed with the server name", async () => {
+    const authFailures: Array<{ mcpServerName: string }> = [];
+    let finalPrCalls = 0;
+    const { client } = createFakeSessionClient({
+      streamScripts: [
+        [
+          createMcpAuthErrorEvent("evt-mcp-auth-err", "github"),
+          createCustomToolUseEvent("evt-final-after-auth", "create_final_pr", {}),
+          createIdleEvent("evt-idle"),
+        ],
+        [createIdleEvent("evt-idle-final")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger: createTestLogger(),
+      onMcpAuthenticationFailed: (info) => {
+        authFailures.push(info);
+      },
+      sessionId: "sesn-mcp-auth-error",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(authFailures).toEqual([{ mcpServerName: "github" }]);
+    expect(finalPrCalls).toBe(1);
+    expect(sessionResult.errored).toBe(false);
+    expect(sessionResult.idleReached).toBe(true);
+  });
+
+  test("a throwing onMcpAuthenticationFailed callback does not tear down the session", async () => {
+    let finalPrCalls = 0;
+    const { lines, logger } = createCapturingLogger();
+    const { client } = createFakeSessionClient({
+      streamScripts: [
+        [
+          createMcpAuthErrorEvent("evt-mcp-auth-err", "github"),
+          createCustomToolUseEvent("evt-final-after-auth", "create_final_pr", {}),
+          createIdleEvent("evt-idle"),
+        ],
+        [createIdleEvent("evt-idle-final")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {
+        create_final_pr: async () => {
+          finalPrCalls += 1;
+          return { prUrl: "https://github.com/owner/repo/pull/1", success: true };
+        },
+      },
+      logger,
+      onMcpAuthenticationFailed: () => {
+        throw new Error("refresh failed");
+      },
+      sessionId: "sesn-mcp-auth-throw",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(finalPrCalls).toBe(1);
+    expect(sessionResult.errored).toBe(false);
+    expect(sessionResult.idleReached).toBe(true);
+    expect(
+      findLogLine(lines, (line) => line.msg === "onMcpAuthenticationFailed callback failed"),
+    ).toBeDefined();
+  });
+
+  test("a rejecting async onMcpAuthenticationFailed callback is caught and logged", async () => {
+    const { lines, logger } = createCapturingLogger();
+    const { client } = createFakeSessionClient({
+      streamScripts: [
+        [createMcpAuthErrorEvent("evt-mcp-auth-err", "github"), createIdleEvent("evt-idle")],
+        [createIdleEvent("evt-idle-final")],
+      ],
+    });
+
+    const sessionResult = await runSession(client, {
+      handlers: {},
+      logger,
+      onMcpAuthenticationFailed: async () => {
+        throw new Error("async refresh failed");
+      },
+      sessionId: "sesn-mcp-auth-reject",
+      timeouts: { maxWallClockMs: 1_000, streamReconnectDelayMs: 0 },
+    });
+
+    expect(sessionResult.errored).toBe(false);
+    expect(sessionResult.idleReached).toBe(true);
+    expect(
+      findLogLine(lines, (line) => line.msg === "onMcpAuthenticationFailed callback failed"),
+    ).toBeDefined();
   });
 
   test("session.error from a model error still triggers a reconnect", async () => {

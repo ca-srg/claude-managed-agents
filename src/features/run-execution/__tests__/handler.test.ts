@@ -1377,6 +1377,151 @@ describe("runIssueOrchestration", () => {
     });
   });
 
+  test("GitHub MCP auth failure re-mints the installation token into GitHub vault credentials", async () => {
+    const refreshCalls: Array<{ owner: string; repo: string }> = [];
+    const credentialUpdates: Array<{ credentialId: string; token: string; vaultId: string }> = [];
+    const refreshedAccess = {
+      authMode: "app",
+      authorizationToken: "ghs_refreshed_token",
+      installationId: 12345,
+      octokit: { token: "ghs_refreshed_token" },
+      permissions: { contents: "write" },
+      repositorySelection: "selected",
+    };
+    const fakeAnthropic = createFakeAnthropicSessions({
+      createResources: [
+        { id: "rsrc-repo", type: "github_repository" },
+        { id: "rsrc-vault", type: "vault" },
+      ],
+      streamScripts: [],
+    });
+    const harness = createHarness({
+      anthropicClient: fakeAnthropic.client as unknown as NonNullable<
+        RunExecutionDeps["anthropicClient"]
+      >,
+      ensureMcpCredentials: (async () => [
+        { credentialId: "cred-github", managedByUs: true, mcpServerUrl: GITHUB_MCP_URL },
+        { credentialId: "cred-linear", managedByUs: true, mcpServerUrl: LINEAR_MCP_URL },
+      ]) as RunExecutionDeps["ensureMcpCredentials"],
+      githubAuth: {
+        refreshRepositoryAccess: async (owner: string, repo: string) => {
+          refreshCalls.push({ owner, repo });
+          return refreshedAccess;
+        },
+        resolveRepositoryAccess: async () => ({
+          authMode: "app",
+          authorizationToken: "ghs_initial_token",
+          installationId: 12345,
+          octokit: { token: "ghs_initial_token" },
+          permissions: { contents: "write" },
+          repositorySelection: "selected",
+        }),
+      } as unknown as RunExecutionDeps["githubAuth"],
+      runSession: (async (_client, options) => {
+        await options.onMcpAuthenticationFailed?.({ mcpServerName: BUILTIN_GITHUB_MCP_NAME });
+        // Non-GitHub MCP servers have their own credentials; the GitHub
+        // fallback must ignore them entirely.
+        await options.onMcpAuthenticationFailed?.({ mcpServerName: "kibela" });
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
+        return buildSessionResult({ sessionId: options.sessionId });
+      }) as RunExecutionDeps["runSession"],
+      updateMcpCredentialToken: (async (_client, context) => {
+        credentialUpdates.push(context);
+      }) as RunExecutionDeps["updateMcpCredentialToken"],
+    });
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-mcp-auth-fallback" },
+      harness.deps,
+    );
+
+    expect(result.status).toBe("completed");
+    expect(refreshCalls).toEqual([{ owner: "owner", repo: "name" }]);
+    expect(credentialUpdates).toEqual([
+      { credentialId: "cred-github", token: "ghs_refreshed_token", vaultId: "vault-1" },
+    ]);
+    // The session's github_repository resources hold the same expired token,
+    // so the fallback must rewrite them too — only MCP calls would recover
+    // otherwise, while in-session git operations kept failing.
+    expect(fakeAnthropic.calls.resourceUpdates).toEqual([
+      {
+        params: { authorization_token: "ghs_refreshed_token", session_id: "sess-1" },
+        resourceId: "rsrc-repo",
+      },
+    ]);
+  });
+
+  test("concurrent GitHub MCP auth failures share a single in-flight re-mint", async () => {
+    let refreshCalls = 0;
+    const credentialUpdates: string[] = [];
+    const harness = createHarness({
+      ensureMcpCredentials: (async () => [
+        { credentialId: "cred-github", managedByUs: true, mcpServerUrl: GITHUB_MCP_URL },
+      ]) as RunExecutionDeps["ensureMcpCredentials"],
+      githubAuth: {
+        refreshRepositoryAccess: async () => {
+          refreshCalls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return {
+            authMode: "app",
+            authorizationToken: "ghs_refreshed_token",
+            installationId: 12345,
+            octokit: { token: "ghs_refreshed_token" },
+            permissions: { contents: "write" },
+            repositorySelection: "selected",
+          };
+        },
+        resolveRepositoryAccess: async () => ({
+          authMode: "app",
+          authorizationToken: "ghs_initial_token",
+          installationId: 12345,
+          octokit: { token: "ghs_initial_token" },
+          permissions: { contents: "write" },
+          repositorySelection: "selected",
+        }),
+      } as unknown as RunExecutionDeps["githubAuth"],
+      runSession: (async (_client, options) => {
+        await Promise.all([
+          options.onMcpAuthenticationFailed?.({ mcpServerName: BUILTIN_GITHUB_MCP_NAME }),
+          options.onMcpAuthenticationFailed?.({ mcpServerName: BUILTIN_GITHUB_MCP_NAME }),
+          options.onMcpAuthenticationFailed?.({ mcpServerName: BUILTIN_GITHUB_MCP_NAME }),
+        ]);
+        await options.handlers.create_final_pr?.(
+          {
+            base: "main",
+            body: "Ready for review",
+            head: "agent/issue-42/fix-login-flow",
+            parentIssueNumber: 42,
+            title: "Fix login flow",
+          },
+          createToolHandlerContext(),
+        );
+        return buildSessionResult({ sessionId: options.sessionId });
+      }) as RunExecutionDeps["runSession"],
+      updateMcpCredentialToken: (async (_client, context) => {
+        credentialUpdates.push(context.credentialId);
+      }) as RunExecutionDeps["updateMcpCredentialToken"],
+    });
+
+    const result = await runIssueOrchestration(
+      { dryRun: false, issue: 42, repo: "owner/name", runId: "run-mcp-auth-dedup" },
+      harness.deps,
+    );
+
+    expect(result.status).toBe("completed");
+    expect(refreshCalls).toBe(1);
+    expect(credentialUpdates).toEqual(["cred-github"]);
+  });
+
   test("SQLite insertRun failures do not abort a successful run", async () => {
     const harness = createHarness();
     const db = harness.deps.db;
