@@ -5,7 +5,7 @@
     "": {
       "name": "github-issue",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.95.1",
+        "@anthropic-ai/sdk": "0.104.1",
         "@ngrok/ngrok": "^1.7.0",
         "@octokit/auth-app": "^8.2.0",
         "hono": "^4.12.14",
@@ -29,7 +29,7 @@
     },
   },
   "packages": {
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.95.1", "https://npm.flatt.tech/@anthropic-ai/sdk/-/sdk-0.95.1.tgz", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-OO9AF7hmAoU492c/mD7Q2cPqI2WNAj7rAPHlawgBeUgpwiboLRiDs+grsErGWeHHP9ZRWfzq2OVrODTt8aITVg=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.104.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-gGACa/+IaiXzRRmF96aOhamoBgapKRBiFWbmmTFP8aMkpaEcuStF+Q61bjo4vPxBM7gqWJNZqsngslRdnLHv0Q=="],
 
     "@ast-grep/cli": ["@ast-grep/cli@0.30.1", "https://npm.flatt.tech/@ast-grep/cli/-/cli-0.30.1.tgz", { "dependencies": { "detect-libc": "2.0.3" }, "optionalDependencies": { "@ast-grep/cli-darwin-arm64": "0.30.1", "@ast-grep/cli-darwin-x64": "0.30.1", "@ast-grep/cli-linux-arm64-gnu": "0.30.1", "@ast-grep/cli-linux-x64-gnu": "0.30.1", "@ast-grep/cli-win32-arm64-msvc": "0.30.1", "@ast-grep/cli-win32-ia32-msvc": "0.30.1", "@ast-grep/cli-win32-x64-msvc": "0.30.1" }, "bin": { "sg": "sg", "ast-grep": "ast-grep" } }, "sha512-or1izzRdiqMCwM7/XbJhu2GSIwlf5iwjS8lXnCdEEPTPMVbmbsg0u872C2tU1oEsC8gluF6gI4xWUCGt4H1N5w=="],
 

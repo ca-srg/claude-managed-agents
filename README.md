@@ -120,9 +120,11 @@ const config: Config = {
 export default config;
 ```
 
+The default parent model remains `claude-opus-4-7` for zero data retention (ZDR) compatibility. `claude-fable-5` is supported as an explicit opt-in via `models.parent` or `PARENT_MODEL`, but Anthropic does not make it available under ZDR and it requires 30-day retention.
+
 ## Cost
 
-As a rough guideline, expect roughly `0.08 USD` per session-hour (based on `claude-opus-4-7` session pricing as of 2026-04).
+Costs depend on the configured models and current Anthropic pricing. The default parent/child pair is `claude-opus-4-7` / `claude-sonnet-4-6`; opting into `claude-fable-5` uses that model's pricing and retention policy.
 
 The total cost from issue decomposition to sub-task completion depends on the size of the issue and the number of child tasks generated. Anthropic's pricing changes over time, so check the official docs for the latest rates.
 

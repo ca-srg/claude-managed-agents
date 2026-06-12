@@ -11,7 +11,7 @@ import type { McpServer } from "@/shared/persistence/db";
 import { GENERIC_CHILD_AGENT_PROMPT, GENERIC_PARENT_AGENT_PROMPT } from "@/shared/prompts/defaults";
 
 const TEST_CONFIG: Config = {
-  models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" },
+  models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" },
   maxSubIssues: 10,
   maxRunMinutes: 120,
   maxChildMinutes: 30,
@@ -45,7 +45,7 @@ const SYSTEM_SKILLS: BetaManagedAgentsSkillParams[] = [
 async function loadGolden(): Promise<{ parent: string; child: string }> {
   return {
     child: "3d7846b7734d484dfe1ee7b8b4a4b0b3dc8f806780a5e23448aeaffa9e8e609b",
-    parent: "8479b9ac3c61126f777ffb09f642d68e2deaf2b08a78f60365deed7bcbc37e6f",
+    parent: "90815d5d75b90307cbf047414150cde49f58fdc570ac2599012302dfd047ea6a",
   };
 }
 

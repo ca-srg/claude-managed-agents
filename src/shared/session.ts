@@ -95,7 +95,7 @@ export type SessionResult = {
   idleReached: boolean;
   lastEventId: string | undefined;
   /**
-   * Model identifier used for cost attribution (e.g. `claude-opus-4-7`).
+   * Model identifier used for cost attribution (e.g. `claude-fable-5`).
    * Optional because the caller may not always know the model (unit tests
    * typically omit it). Token counts still aggregate without a model; only
    * cost computation requires it.
@@ -137,13 +137,22 @@ export type RunSessionOptions = {
   handlers: ToolHandlerMap;
   logger: Logger;
   /**
-   * Model identifier the session is bound to (e.g. `claude-opus-4-7`).
+   * Model identifier the session is bound to (e.g. `claude-fable-5`).
    * Optional because some callers (notably unit tests) do not need cost
    * attribution. When omitted, token counts still aggregate but the
    * resulting `SessionResult.model` is undefined and downstream callers
    * cannot compute USD cost.
    */
   model?: string;
+  /**
+   * Optional hook invoked when the session reports an MCP authentication
+   * failure (`mcp_authentication_failed_error`). Lets callers re-mint expired
+   * credentials (e.g. a GitHub App installation token baked into a vault
+   * `static_bearer` credential) so subsequent MCP calls recover. Awaited so
+   * the refresh lands before further events are processed; failures are
+   * caught and logged, never tearing down the session loop.
+   */
+  onMcpAuthenticationFailed?: (info: { mcpServerName: string }) => Promise<void> | void;
   sessionId: string;
   signal?: AbortSignal;
   /**
@@ -955,6 +964,24 @@ export async function runSession(
           },
           "non-fatal MCP error; continuing session without reconnect",
         );
+        if (
+          sessionError.type === "mcp_authentication_failed_error" &&
+          options.onMcpAuthenticationFailed
+        ) {
+          const logCallbackFailure = (error: unknown) => {
+            sessionLogger.warn(
+              { err: error, eventId: event.id, mcpServerName: sessionError.mcp_server_name },
+              "onMcpAuthenticationFailed callback failed",
+            );
+          };
+          try {
+            await Promise.resolve(
+              options.onMcpAuthenticationFailed({ mcpServerName: sessionError.mcp_server_name }),
+            ).catch(logCallbackFailure);
+          } catch (error) {
+            logCallbackFailure(error);
+          }
+        }
         return controller.signal.aborted ? "stop" : "continue";
       }
 

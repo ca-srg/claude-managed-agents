@@ -64,7 +64,7 @@ function buildConfig(overrides: Partial<Config> = {}): Config {
     maxSubIssues: 5,
     models: {
       child: "claude-sonnet-4-6",
-      parent: "claude-opus-4-7",
+      parent: "claude-fable-5",
     },
     pr: {
       draft: true,

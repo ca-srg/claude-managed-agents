@@ -22,6 +22,23 @@ function assertEnvironmentCreateParams(
   return definition;
 }
 
+type CloudEnvironmentConfig = Extract<
+  NonNullable<EnvironmentCreateParams["config"]>,
+  { type: "cloud" }
+>;
+
+function expectCloudConfig(definition: EnvironmentCreateParams): CloudEnvironmentConfig {
+  if (!definition.config) {
+    throw new Error("Expected config to be defined");
+  }
+
+  if (definition.config.type !== "cloud") {
+    throw new Error("Expected cloud config");
+  }
+
+  return definition.config;
+}
+
 function expectUnrestrictedNetwork<T extends BetaUnrestrictedNetwork>(_value: T): void {}
 
 type DefinitionHasLegacyNetwork = "network" extends keyof ReturnType<
@@ -96,27 +113,24 @@ describe("environment", () => {
 
     expect(definition.name).toBe("custom-environment");
 
-    if (!definition.config) {
-      throw new Error("Expected config to be defined");
-    }
+    const cloudConfig = expectCloudConfig(definition);
+    expect(cloudConfig.type).toBe("cloud");
 
-    expect(definition.config.type).toBe("cloud");
-
-    if (!definition.config.networking) {
+    if (!cloudConfig.networking) {
       throw new Error("Expected networking to be defined");
     }
 
-    if (definition.config.networking.type !== "unrestricted") {
+    if (cloudConfig.networking.type !== "unrestricted") {
       throw new Error("Expected unrestricted networking");
     }
 
-    expectUnrestrictedNetwork(definition.config.networking);
+    expectUnrestrictedNetwork(cloudConfig.networking);
 
-    if (!definition.config.packages) {
+    if (!cloudConfig.packages) {
       throw new Error("Expected packages to be defined");
     }
 
-    expect(definition.config.packages).toEqual({
+    expect(cloudConfig.packages).toEqual({
       type: "packages",
       npm: ["bun"],
       apt: ["git"],
@@ -126,15 +140,13 @@ describe("environment", () => {
   test("buildEnvironmentDefinition never emits legacy network fields", () => {
     const definition = buildEnvironmentDefinition();
 
-    if (!definition.config) {
-      throw new Error("Expected config to be defined");
-    }
+    const cloudConfig = expectCloudConfig(definition);
 
-    if (!definition.config.networking) {
+    if (!cloudConfig.networking) {
       throw new Error("Expected networking to be defined");
     }
 
-    if (definition.config.networking.type !== "unrestricted") {
+    if (cloudConfig.networking.type !== "unrestricted") {
       throw new Error("Expected unrestricted networking");
     }
 
@@ -525,7 +537,7 @@ describe("environment", () => {
 
     expect(userPackages.apt).toEqual(["vim"]);
     expect(userPackages.npm).toEqual(["typescript"]);
-    expect(definition.config?.packages).toEqual({
+    expect(expectCloudConfig(definition).packages).toEqual({
       type: "packages",
       apt: ["git", "vim"],
       cargo: [],

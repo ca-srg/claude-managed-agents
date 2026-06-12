@@ -16,7 +16,7 @@
     "dev:css": "tailwindcss -i ./src/features/dashboard/styles/tailwind.css -o ./dist/dashboard.css --watch"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.95.1",
+    "@anthropic-ai/sdk": "0.104.1",
     "@ngrok/ngrok": "^1.7.0",
     "@octokit/auth-app": "^8.2.0",
     "hono": "^4.12.14",
