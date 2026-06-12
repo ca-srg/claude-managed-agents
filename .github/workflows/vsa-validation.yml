@@ -21,8 +21,10 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
     outputs:
-      codex_message: ${{ steps.run_codex.outputs['final-message'] }}
+      codex_message: ${{ steps.run_codex.outputs['final-message'] || steps.missing_openai_api_key.outputs.message }}
     if: >-
       ${{
         github.event.pull_request.draft == false &&
@@ -37,8 +39,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Report missing OpenAI API key
+        id: missing_openai_api_key
+        if: ${{ env.HAS_OPENAI_API_KEY != 'true' }}
+        run: |
+          {
+            echo 'message<<EOF'
+            echo 'OPENAI_API_KEY secret が未設定のため VSA Validation をスキップしました。openai/codex-action で実行するには repository または organization secret に OPENAI_API_KEY を設定してください。'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run Codex VSA validation
         id: run_codex
+        if: ${{ env.HAS_OPENAI_API_KEY == 'true' }}
         uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
