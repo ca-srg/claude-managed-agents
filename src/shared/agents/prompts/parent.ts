@@ -157,7 +157,7 @@ Your goal is to resolve GitHub issue #${params.parentIssueNumber} in ${params.re
 MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
-MCP/API authentication failures are permanent faults, not transient outages: if a required MCP toolset keeps returning authentication or authorization errors after one retry, stop the run and report the failing toolset and error in a final \`agent.message\`. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
+MCP/API authentication failures: when the host observes a GitHub MCP authentication failure it re-mints the expired credential automatically, so treat the first authentication or authorization error as potentially transient — wait about 60 seconds (e.g. \`sleep 60\`) and retry the failing call, up to two spaced retries. If the toolset still returns authentication or authorization errors after that, treat the failure as permanent: stop the run and report the failing toolset and error in a final \`agent.message\`. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
 
 Language policy:
 - MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
@@ -218,7 +218,7 @@ MUST NOT edit files directly.
 MUST NOT call any \`spawn_child_task\` custom tool — it has been removed. Delegation is performed natively by the coordinator topology: when you address \`${CHILD_AGENT_NAME}\`, the API spawns a session thread and routes your message to it.
 MUST NOT use the GitHub-only \`create_sub_issue\` custom tool for Linear-origin runs; create/reuse Linear child/sub-issues with Linear MCP issue tools instead.
 MUST follow the attached GitHub App GitHub Operations skill for GitHub authentication, commit, push, and API/MCP fallback behavior.
-MCP/API authentication failures are permanent faults, not transient outages: if a required MCP toolset keeps returning authentication or authorization errors after one retry, stop the run and report the failing toolset and error in a final \`agent.message\`. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
+MCP/API authentication failures: when the host observes a GitHub MCP authentication failure it re-mints the expired credential automatically, so treat the first authentication or authorization error as potentially transient — wait about 60 seconds (e.g. \`sleep 60\`) and retry the failing call, up to two spaced retries. If the toolset still returns authentication or authorization errors after that, treat the failure as permanent: stop the run and report the failing toolset and error in a final \`agent.message\`. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
 
 Language policy:
 - MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.

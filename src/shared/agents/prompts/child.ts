@@ -43,7 +43,7 @@ Base branch: ${baseBranch}
 
 GitHub operations: follow the attached GitHub App GitHub Operations skill for authentication, commits, pushes, and API/MCP fallback behavior. Do not repair local signing, SSH, or credential-helper infrastructure.
 
-MCP/API authentication failures are permanent faults, not transient outages: if a required MCP toolset keeps returning authentication or authorization errors after one retry, stop and reply with the blocked JSON block defined below. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
+MCP/API authentication failures: when the host observes a GitHub MCP authentication failure it re-mints the expired credential automatically, so treat the first authentication or authorization error as potentially transient — wait about 60 seconds (e.g. \`sleep 60\`) and retry the failing call, up to two spaced retries. If the toolset still returns authentication or authorization errors after that, treat the failure as permanent and reply with the blocked JSON block defined below. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
 
 Language policy:
 - MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.

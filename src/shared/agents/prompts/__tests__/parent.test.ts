@@ -65,8 +65,9 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain(
       "If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping",
     );
+    expect(prompt).toContain("it re-mints the expired credential automatically");
     expect(prompt).toContain(
-      "MCP/API authentication failures are permanent faults, not transient outages",
+      "wait about 60 seconds (e.g. `sleep 60`) and retry the failing call, up to two spaced retries",
     );
     expect(prompt).toContain(
       "MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths",
