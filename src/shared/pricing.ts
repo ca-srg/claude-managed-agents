@@ -48,7 +48,7 @@ export type SessionUsageTokens = {
  */
 export const MODEL_PRICING_USD_PER_MTOK: Readonly<Record<string, ModelPricingPerMillionTokens>> =
   Object.freeze({
-    // Claude Fable 5 — current parent/coordinator tier.
+    // Claude Fable 5 — opt-in parent/coordinator tier; not available for ZDR workspaces.
     "claude-fable-5": {
       input: 10,
       cacheWrite5m: 12.5,

@@ -8,9 +8,9 @@ export const ConfigSchema = z
     models: z
       .object({
         child: z.string().default("claude-sonnet-4-6"),
-        parent: z.string().default("claude-fable-5"),
+        parent: z.string().default("claude-opus-4-7"),
       })
-      .default({ child: "claude-sonnet-4-6", parent: "claude-fable-5" }),
+      .default({ child: "claude-sonnet-4-6", parent: "claude-opus-4-7" }),
     maxSubIssues: z.number().int().default(10),
     maxRunMinutes: z.number().int().default(120),
     maxChildMinutes: z.number().int().default(30),
