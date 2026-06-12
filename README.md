@@ -13,6 +13,98 @@ The WebUI lets you trigger the equivalent of `--issue 21925 --repo CyberAgentSRG
 
 It is built on top of the Anthropic Managed Agents API (`@anthropic-ai/sdk`); the agents operate on your GitHub repository directly to drive each task to completion.
 
+## Architecture
+
+`github-issue-agent` runs as a Bun + Hono service with SQLite as its local source of truth. A run can be started from the WebUI/API or by the GitHub trigger poller, then a serial run queue executes the orchestration. Each execution resolves a repo-scoped GitHub App token, prepares the Anthropic cloud environment, vault-backed MCP credentials, and versioned parent/child agents, then creates a Managed Agents session. The parent coordinator delegates implementation work to the child implementer through Managed Agents multi-agent threads; app-side custom tools create sub-issues and the final PR, while MCP calls go from Anthropic to the configured MCP servers.
+
+```mermaid
+flowchart TD
+  Operator["Browser / operator"]
+  GitHubTrigger["GitHub issue labels/comments<br/>(polled)"]
+
+  subgraph App["Bun + Hono service"]
+    Dashboard["Dashboard WebUI"]
+    RunAPI["Run API<br/>/api/runs + SSE"]
+    Poller["GitHub trigger poller"]
+    Queue["Run queue<br/>serial worker"]
+    Execution["Run execution<br/>runIssueOrchestration"]
+    Reaper["Stale run reaper"]
+    EventBus["Run events<br/>SQLite + live fanout"]
+    DevTunnel["Optional dev tunnel<br/>ngrok + mcp-gateway + mcp-proxy"]
+    CustomTools["Custom tool handlers<br/>create_sub_issue / create_final_pr"]
+  end
+
+  DB[(SQLite dashboard.db<br/>runs / sessions / events<br/>prompts / repositories / MCP servers<br/>repo envs / agent registry)]
+  State[".github-issue-agent<br/>runtime state + locks"]
+
+  subgraph Anthropic["Anthropic Claude Managed Agents"]
+    Env["Cloud environment"]
+    Vault["Vault<br/>MCP credentials"]
+    AgentRegistry["Agent registry<br/>create/update versions"]
+    Parent["Parent coordinator agent<br/>github-issue-orchestrator"]
+    Child["Child implementer agent<br/>github-issue-implementer"]
+    Session["Run session<br/>primary + child threads"]
+  end
+
+  subgraph External["External systems"]
+    GitHubAuth["GitHub App auth<br/>installation token"]
+    GitHub["GitHub API / repository"]
+    GitHubMCP["GitHub MCP"]
+    LinearMCP["Linear MCP"]
+    CustomMCP["Custom MCP servers"]
+  end
+
+  Operator --> Dashboard
+  Operator --> RunAPI
+  Dashboard --> Queue
+  RunAPI --> Queue
+  RunAPI --> EventBus
+  GitHubTrigger --> Poller
+  Poller --> DB
+  Poller --> GitHubAuth
+  Poller --> Queue
+  Queue --> DB
+  Queue --> Execution
+  Queue --> EventBus
+  Reaper --> DB
+  Reaper --> Session
+  Reaper --> EventBus
+  EventBus --> DB
+
+  Execution --> GitHubAuth
+  GitHubAuth --> GitHub
+  Execution --> DB
+  Execution --> State
+  Execution --> Env
+  Execution --> Vault
+  Execution --> AgentRegistry
+  Execution --> Session
+  Execution --> EventBus
+
+  AgentRegistry --> DB
+  AgentRegistry --> Child
+  AgentRegistry --> Parent
+  Session --> Parent
+  Parent -->|multiagent.coordinator threads| Child
+  Parent --> CustomTools
+  CustomTools --> GitHub
+  CustomTools --> DB
+
+  DB -->|mcp_servers rows| AgentRegistry
+  Parent --> GitHubMCP
+  Child --> GitHubMCP
+  Parent --> LinearMCP
+  Child --> LinearMCP
+  Parent --> CustomMCP
+  Child --> CustomMCP
+  Vault -. credentials .-> GitHubMCP
+  Vault -. credentials .-> LinearMCP
+  Vault -. credentials .-> CustomMCP
+  DevTunnel --> CustomMCP
+  DevTunnel -->|sync tunnel URLs| DB
+  RunAPI -. SSE session events .-> Session
+```
+
 ## Quick Start
 
 ```bash
