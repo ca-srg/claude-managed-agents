@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   CHILD_RUNTIME_TEMPLATE_SOURCE,
+  CHILD_SYSTEM_BLOCKER_RETRY_RULES,
   GENERIC_CHILD_AGENT_PROMPT,
   GENERIC_PARENT_AGENT_PROMPT,
   getDefaultPrompt,
@@ -33,8 +34,19 @@ describe("default prompt constants (byte-equal canonical source)", () => {
         "Work only on the assigned task and return structured JSON.",
         "Commit messages must be written in English using Conventional Commits format (`type(scope): subject`; omit scope when not useful).",
         "Write human-readable JSON string values in Japanese. Use English for JSON keys, code identifiers, file paths, logs, quoted source text, and other terms that are commonly written in English in developer workflows.",
+        "",
+        CHILD_SYSTEM_BLOCKER_RETRY_RULES,
       ].join("\n"),
     );
+  });
+
+  it("child system prompt includes blocker schema and auth retry guidance", () => {
+    expect(GENERIC_CHILD_AGENT_PROMPT).toContain("MCP/API authentication failures:");
+    expect(GENERIC_CHILD_AGENT_PROMPT).toContain(
+      "wait about 60 seconds (e.g. `sleep 60`) and retry the failing call, up to two spaced retries",
+    );
+    expect(GENERIC_CHILD_AGENT_PROMPT).toContain('"status": "blocked"');
+    expect(GENERIC_CHILD_AGENT_PROMPT).toContain("`error.type` set to `unresolvable_instructions`");
   });
 
   it("getDefaultPrompt returns canonical sources for editable keys", () => {

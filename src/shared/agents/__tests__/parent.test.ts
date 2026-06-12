@@ -90,7 +90,7 @@ describe("buildParentDefinition", () => {
     });
   });
 
-  test("forwards custom tools and includes the github MCP and read toolsets", () => {
+  test("forwards custom tools and includes the github MCP and read-only inspection toolsets", () => {
     const parentDefinition: AgentCreateParams = buildParentDefinition(
       TEST_CONFIG,
       { parent: "x" },
@@ -115,6 +115,16 @@ describe("buildParentDefinition", () => {
           {
             enabled: true,
             name: "read",
+            permission_policy: { type: "always_allow" },
+          },
+          {
+            enabled: true,
+            name: "glob",
+            permission_policy: { type: "always_allow" },
+          },
+          {
+            enabled: true,
+            name: "grep",
             permission_policy: { type: "always_allow" },
           },
         ],

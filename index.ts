@@ -30,7 +30,6 @@ import {
   parseStaleRunReaperConfigFromEnv,
 } from "@/features/stale-run-reaper/reaper";
 import { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
-import { buildChildPrompt } from "@/shared/agents/prompts/child";
 import { buildParentPrompt } from "@/shared/agents/prompts/parent";
 import {
   createDatabaseAgentRegistryStateStore,
@@ -277,7 +276,6 @@ const executor = async (
   const runDeps: RunExecutionDeps = {
     acquireRunLock,
     anthropicClient: anthropicClient as RunExecutionDeps["anthropicClient"],
-    buildChildPrompt,
     buildParentPrompt,
     db,
     ensureAgents: agentRegistry.ensureAgents,

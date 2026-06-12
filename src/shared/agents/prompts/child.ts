@@ -1,11 +1,11 @@
 import { CHILD_AGENT_NAME } from "@/shared/constants";
 
 /**
- * Child runtime prompt builder. Used as the system prompt for the
- * implementer agent. Per Managed Agents' multi-agent coordinator topology
- * the parent now delegates work via thread messages rather than spawning a
- * separate session, so the prompt only needs static guidance — branch name,
- * task spec, etc. arrive in subsequent thread messages from the parent.
+ * Child runtime prompt template builder shown as the read-only child.runtime
+ * prompt reference in the dashboard. Production implementer agents receive
+ * the editable child.system prompt from the DB; per Managed Agents'
+ * multi-agent coordinator topology the parent delegates work via thread
+ * messages rather than spawning a separate session.
  */
 export type BuildChildPromptArgs = {
   repoOwner: string;
@@ -42,6 +42,8 @@ Working branch: ${branch}
 Base branch: ${baseBranch}
 
 GitHub operations: follow the attached GitHub App GitHub Operations skill for authentication, commits, pushes, and API/MCP fallback behavior. Do not repair local signing, SSH, or credential-helper infrastructure.
+
+MCP/API authentication failures: when the host observes a GitHub MCP authentication failure it re-mints the expired credential automatically, so treat the first authentication or authorization error as potentially transient — wait about 60 seconds (e.g. \`sleep 60\`) and retry the failing call, up to two spaced retries. If the toolset still returns authentication or authorization errors after that, treat the failure as permanent and reply with the blocked JSON block defined below. MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths.
 
 Language policy:
 - MUST write GitHub sub-issue bodies, Linear child/sub-issue bodies, pull request bodies, delegated task specs, acceptance criteria, and final user-visible summaries in Japanese.
@@ -85,12 +87,22 @@ For every task you receive from the parent thread, follow this exact procedure:
      "taskId": "<echo the parent's taskId>",
      "success": false,
      "error": {
-       "type": "<short type, e.g. test_failed | build_failed | unknown>",
+       "type": "<short type, e.g. test_failed | build_failed | unresolvable_instructions | unknown>",
        "message": "<one-sentence Japanese explanation>",
        "stderr": "<optional last lines of stderr>"
      }
    }
    \`\`\`
+   If the task instructions are unclear, contradictory, or unresolvable, use the failure schema above with \`error.type\` set to \`unresolvable_instructions\` so the parent can correct and retry the task.
+   If you are blocked by environment/access/tooling and cannot proceed (authentication failures after retries, missing access, unavailable tooling), return:
+   \`\`\`json
+   {
+     "taskId": "<echo the parent's taskId>",
+     "status": "blocked",
+     "reason": "<one-sentence Japanese explanation of the blocker>"
+   }
+   \`\`\`
+   MUST NOT end a task thread silently or with prose only: every reply to the parent MUST end with exactly one of these JSON blocks (success, failure, or blocked).
 
 Critical guardrails:
 - MUST NOT spawn or delegate to any other sub-agent.

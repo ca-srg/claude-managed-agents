@@ -44,8 +44,8 @@ const SYSTEM_SKILLS: BetaManagedAgentsSkillParams[] = [
 
 async function loadGolden(): Promise<{ parent: string; child: string }> {
   return {
-    child: "3d7846b7734d484dfe1ee7b8b4a4b0b3dc8f806780a5e23448aeaffa9e8e609b",
-    parent: "ae49346e2dcdc1256e432970991edb437568e9bfe9585f06b1c12ae14141145a",
+    child: "29040cbf42e290c51414617adc693423d9b4d19cb1fea530fb5c5456ec68ed0c",
+    parent: "73b7124da0db7dd8a2a0cea19b14fe633728226273efa32fc5c0ff45500b9d2e",
   };
 }
 

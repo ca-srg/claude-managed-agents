@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
 
 import { createDbModule } from "@/shared/persistence/db";
+import { childSystemPromptHasRequiredRules } from "@/shared/prompts/defaults";
 import type { PromptKey, SeedDeps } from "@/shared/prompts/seeder";
 import { seedDefaultPrompts } from "@/shared/prompts/seeder";
 
@@ -135,6 +136,31 @@ describe("seedDefaultPrompts", () => {
         expect(dbModule.getPrompt(key)).toBeNull();
       }
       expect(getRuntimeRevisionCount(getDb())).toBe(0);
+    } finally {
+      dbModule.close();
+    }
+  });
+
+  test("upgrades existing child.system prompts missing blocker/auth-retry rules", async () => {
+    const { dbModule } = createCapturedDbModule();
+    const { logger } = createLogger();
+
+    try {
+      dbModule.initDb();
+      dbModule.seedPromptIfMissing("child.system", "Custom child prompt without blocker rules");
+
+      await seedDefaultPrompts({ db: dbModule, logger });
+
+      const upgraded = dbModule.getPrompt("child.system");
+      expect(upgraded?.body).toContain("Custom child prompt without blocker rules");
+      expect(upgraded?.body).toContain("MCP/API authentication failures:");
+      expect(upgraded?.body).toContain('"status": "blocked"');
+      expect(upgraded?.body).toContain("`error.type` set to `unresolvable_instructions`");
+      expect(childSystemPromptHasRequiredRules(upgraded?.body ?? "")).toBe(true);
+
+      const revisionCountAfterUpgrade = dbModule.getPromptRevisions("child.system").length;
+      await seedDefaultPrompts({ db: dbModule, logger });
+      expect(dbModule.getPromptRevisions("child.system")).toHaveLength(revisionCountAfterUpgrade);
     } finally {
       dbModule.close();
     }

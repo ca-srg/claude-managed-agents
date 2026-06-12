@@ -63,6 +63,30 @@ describe("buildParentPrompt", () => {
       "English Conventional Commits title, Japanese description, and ordered acceptance criteria in Japanese",
     );
     expect(prompt).toContain(
+      "If the system prompt defines post-PR follow-up work (for example CI check polling or review-comment handling), complete that follow-up before stopping",
+    );
+    expect(prompt).toContain("it re-mints the expired credential automatically");
+    expect(prompt).toContain(
+      "wait about 60 seconds if the environment supports waiting, then retry the failing call, up to two spaced retries",
+    );
+    expect(prompt).toContain(
+      "MUST NOT search the sandbox for credentials, probe ports or proxies, or attempt alternative authentication paths",
+    );
+    expect(prompt).toContain(
+      "including `error.type=unresolvable_instructions` for unclear, contradictory, or unresolvable task instructions",
+    );
+    expect(prompt).toContain(
+      'If a sub-agent replies with `"status": "blocked"`, treat only environment/access/tooling blockers (authentication failures, missing access, unavailable tooling) as permanent',
+    );
+    expect(prompt).toContain(
+      "If a blocked response instead describes unclear, contradictory, or unresolvable task instructions, handle it as a task-spec failure",
+    );
+    expect(prompt).toContain(
+      "do NOT treat the missing data as a pass — report the blocker in your final `agent.message` and stop instead of approving",
+    );
+    expect(prompt).toContain("Run status: blocked");
+    expect(prompt).toContain("Blocker type: post_pr_followup_unavailable");
+    expect(prompt).toContain(
       "Emit a final `agent.message` containing the resulting PR URL and stop",
     );
     expect(prompt).toContain("MUST NOT edit files directly");
@@ -71,7 +95,7 @@ describe("buildParentPrompt", () => {
       "MUST handle `create_sub_issue` returning an existing (deduplicated) sub-issue without error",
     );
     expect(prompt).toContain(
-      "If a sub-agent reports failure, analyze the error, generate a corrective brief",
+      "analyze the error, generate a corrective brief with explicit additional constraints",
     );
     expect(prompt).toContain("(max 3 retries per task)");
   });
@@ -160,6 +184,10 @@ describe("buildParentPrompt", () => {
     );
     expect(prompt).toContain("re-delegate the same Linear child/sub-issue");
     expect(prompt).toContain("(max 3 retries per task)");
+    expect(prompt).toContain("including `error.type=unresolvable_instructions`");
+    expect(prompt).toContain("handle it as a task-spec failure");
+    expect(prompt).toContain("Run status: blocked");
+    expect(prompt).toContain("Blocker type: post_pr_followup_unavailable");
     expect(prompt).toContain(
       "call the `create_final_pr` custom tool with a consolidated English Conventional Commits title and Japanese body",
     );

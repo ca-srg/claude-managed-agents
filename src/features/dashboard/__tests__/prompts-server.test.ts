@@ -27,6 +27,15 @@ function postFormRequest(path: string, fields: Record<string, string>): Request 
   });
 }
 
+function escapeHtmlForTest(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 afterEach(() => {
   while (openDbs.length > 0) {
     openDbs.pop()?.close();
@@ -134,7 +143,7 @@ describe("prompt routes", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(body).toContain(getDefaultPrompt("child.system"));
+    expect(body).toContain(escapeHtmlForTest(getDefaultPrompt("child.system")));
   });
 
   test("POST save /prompts/parent.system valid body redirects with no-store", async () => {

@@ -8,7 +8,6 @@ import type { handleCreateFinalPr } from "@/features/finalize-pr/handler";
 import type { runPreflight } from "@/features/preflight/validate";
 import type { ensureEnvironment, ensureEnvironmentForRepo } from "@/shared/agents/environment";
 import type { ParentCustomTools } from "@/shared/agents/parent";
-import type { buildChildPrompt } from "@/shared/agents/prompts/child";
 import type { buildParentPrompt } from "@/shared/agents/prompts/parent";
 import type { EnsureAgents } from "@/shared/agents/registry";
 import type { Config, loadConfig } from "@/shared/config";
@@ -96,6 +95,7 @@ export type RunExecutionDb = Pick<
   | "insertSession"
   | "insertSessionPlaceholder"
   | "listMcpServers"
+  | "savePromptRevision"
   | "seedPromptIfMissing"
   | "setDefaultEnvironmentState"
   | "setRepoEnvironmentAnthropicState"
@@ -113,7 +113,6 @@ export type RunExecutionObservers = {
 export type RunExecutionDeps = {
   acquireRunLock: typeof acquireRunLock;
   anthropicClient?: AnthropicClientLike;
-  buildChildPrompt: typeof buildChildPrompt;
   buildParentPrompt: typeof buildParentPrompt;
   db?: RunExecutionDb;
   ensureAgents: EnsureAgents;
@@ -786,6 +785,28 @@ function stringProperty(value: unknown, key: string): string | undefined {
 
   const candidate = (value as Record<string, unknown>)[key];
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
+}
+
+const FINAL_BLOCKER_STATUS_PATTERN = /^\s*Run status:\s*blocked\s*$/im;
+const FINAL_BLOCKER_TYPE_PATTERN = /^\s*Blocker type:\s*([a-z][a-z0-9_.-]*)\s*$/im;
+
+function agentReportedBlocker(message: string | undefined): ErrorResult | null {
+  if (message === undefined || !FINAL_BLOCKER_STATUS_PATTERN.test(message)) {
+    return null;
+  }
+
+  const blockerType = FINAL_BLOCKER_TYPE_PATTERN.exec(message)?.[1];
+  const summary = message
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 3)
+    .join(" / ");
+
+  return {
+    message: `Agent reported a blocker${blockerType ? ` (${blockerType})` : ""}: ${summary}`,
+    type: "agent_reported_blocker",
+  };
 }
 
 function buildSubIssueObserverPayload(input: {
@@ -1588,6 +1609,11 @@ export async function runIssueOrchestration(
       throw new RunExecutionFailure("timeout", "Session timed out before completion");
     }
 
+    const blocker = agentReportedBlocker(sessionResult.lastAgentMessageText);
+    if (blocker !== null) {
+      throw new RunExecutionFailure(blocker.type, blocker.message);
+    }
+
     if (!runState.prUrl) {
       throw new RunExecutionFailure(
         "final_pr_missing",
@@ -1623,6 +1649,7 @@ export async function runIssueOrchestration(
     return {
       aborted: wasAborted,
       errored,
+      ...(runState?.prUrl ? { prUrl: runState.prUrl } : {}),
       runId: fallbackRunId,
       status,
       timedOut: errored.type === "timeout",
