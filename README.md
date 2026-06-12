@@ -105,7 +105,7 @@ Customize behavior by creating a `github-issue-agent.config.ts` file.
 import type { Config } from "./src/shared/config";
 
 const config: Config = {
-  models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" },
+  models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" },
   maxSubIssues: 10,
   maxRunMinutes: 120,
   maxChildMinutes: 30,
@@ -122,7 +122,7 @@ export default config;
 
 ## Cost
 
-As a rough guideline, expect roughly `0.08 USD` per session-hour (based on `claude-opus-4-7` session pricing as of 2026-04).
+As a rough guideline, expect roughly `0.08 USD` per session-hour (based on `claude-fable-5` Managed Agents flat session-hour pricing as of 2026-06).
 
 The total cost from issue decomposition to sub-task completion depends on the size of the issue and the number of child tasks generated. Anthropic's pricing changes over time, so check the official docs for the latest rates.
 

@@ -201,13 +201,19 @@ export function createVaultModule(overrides: Partial<VaultModuleDependencies> = 
 
     const existingByUrl = new Map<string, EnsuredMcpCredential>();
     for await (const credentialEntry of credentialsApi.list(context.vaultId)) {
+      const credentialAuth = credentialEntry.auth;
+      if (credentialAuth.type !== "static_bearer" && credentialAuth.type !== "mcp_oauth") {
+        continue;
+      }
+
+      const mcpServerUrl = credentialAuth.mcp_server_url;
       // First match wins. Anthropic does not return order guarantees, so if
       // there are duplicates the caller should clean them up out-of-band.
-      if (!existingByUrl.has(credentialEntry.auth.mcp_server_url)) {
-        existingByUrl.set(credentialEntry.auth.mcp_server_url, {
+      if (!existingByUrl.has(mcpServerUrl)) {
+        existingByUrl.set(mcpServerUrl, {
           credentialId: credentialEntry.id,
           managedByUs: false,
-          mcpServerUrl: credentialEntry.auth.mcp_server_url,
+          mcpServerUrl,
         });
       }
     }

@@ -105,7 +105,7 @@ WebUI から、エージェントの **system prompt を閲覧・編集** でき
 import type { Config } from "./src/shared/config";
 
 const config: Config = {
-  models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" },
+  models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" },
   maxSubIssues: 10,
   maxRunMinutes: 120,
   maxChildMinutes: 30,
@@ -122,7 +122,7 @@ export default config;
 
 ## コスト
 
-目安として、セッション 1 時間あたり約 `0.08 USD` のコストが発生します（2026-04 時点の `claude-opus-4-7` の session 課金に基づく）。
+目安として、セッション 1 時間あたり約 `0.08 USD` のコストが発生します（2026-06 時点の `claude-fable-5` Managed Agents flat session-hour 課金に基づく）。
 
 issue の分解からサブタスクの実装完了までの総コストは、issue の規模や生成される子タスクの数に依存します。Anthropic 側のモデル料金は変動するため、最新の価格は公式ドキュメントで確認してください。
 

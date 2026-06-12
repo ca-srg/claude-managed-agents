@@ -95,7 +95,7 @@ export type SessionResult = {
   idleReached: boolean;
   lastEventId: string | undefined;
   /**
-   * Model identifier used for cost attribution (e.g. `claude-opus-4-7`).
+   * Model identifier used for cost attribution (e.g. `claude-fable-5`).
    * Optional because the caller may not always know the model (unit tests
    * typically omit it). Token counts still aggregate without a model; only
    * cost computation requires it.
@@ -137,7 +137,7 @@ export type RunSessionOptions = {
   handlers: ToolHandlerMap;
   logger: Logger;
   /**
-   * Model identifier the session is bound to (e.g. `claude-opus-4-7`).
+   * Model identifier the session is bound to (e.g. `claude-fable-5`).
    * Optional because some callers (notably unit tests) do not need cost
    * attribution. When omitted, token counts still aggregate but the
    * resulting `SessionResult.model` is undefined and downstream callers

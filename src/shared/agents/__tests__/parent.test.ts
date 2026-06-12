@@ -13,7 +13,7 @@ import { buildParentDefinition, type ParentMultiagentRoster } from "../parent";
 
 const TEST_CONFIG: Config = {
   models: {
-    parent: "claude-opus-4-7",
+    parent: "claude-fable-5",
     child: "claude-sonnet-4-6",
   },
   maxSubIssues: 10,

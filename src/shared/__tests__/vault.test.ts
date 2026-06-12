@@ -93,6 +93,16 @@ function createCredentialRecord(
   };
 }
 
+function getMcpServerUrlFromCreateParams(params: CredentialCreateParams): string {
+  const credentialAuth = params.auth;
+
+  if (credentialAuth.type !== "static_bearer" && credentialAuth.type !== "mcp_oauth") {
+    throw new Error("Expected MCP credential auth");
+  }
+
+  return credentialAuth.mcp_server_url;
+}
+
 function createCredentialStream(
   credentials: BetaManagedAgentsCredential[],
 ): AsyncIterable<BetaManagedAgentsCredential> {
@@ -148,7 +158,7 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
               options.createdCredentialIds?.[createdCredentialIndex] ??
                 options.createdCredentialId ??
                 "vcrd_created",
-              params.auth.mcp_server_url,
+              getMcpServerUrlFromCreateParams(params),
             );
           },
           list: (vaultId: string) => {
@@ -336,9 +346,12 @@ describe("vault helpers", () => {
     ]);
 
     expect(mockVaultClient.createCredentialInvocations).toHaveLength(1);
-    expect(mockVaultClient.createCredentialInvocations[0]?.params.auth.mcp_server_url).toBe(
-      GITHUB_MCP_URL,
-    );
+    const createdCredentialAuth = mockVaultClient.createCredentialInvocations[0]?.params.auth;
+    if (!createdCredentialAuth || createdCredentialAuth.type !== "static_bearer") {
+      throw new Error("Expected static_bearer credential auth");
+    }
+
+    expect(createdCredentialAuth.mcp_server_url).toBe(GITHUB_MCP_URL);
   });
 
   test("ensureMcpCredentials reports credentials as soon as they are created", async () => {
