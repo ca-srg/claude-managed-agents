@@ -98,7 +98,7 @@ export const SessionResultSchema = z.object({
   idleReached: z.boolean(),
   lastEventId: z.union([NonEmptyStringSchema, z.undefined()]),
   /**
-   * Model identifier used for cost attribution (e.g. `claude-opus-4-7`).
+   * Model identifier used for cost attribution (e.g. `claude-fable-5`).
    * Undefined when the caller did not supply a model (e.g. unit tests). Cost
    * cannot be computed without a model, but token counts still aggregate.
    */

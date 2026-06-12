@@ -76,14 +76,21 @@ function createVaultRecord(vaultId: string): BetaManagedAgentsVault {
 function createCredentialRecord(
   credentialId: string,
   mcpServerUrl: string,
+  authType: "mcp_oauth" | "static_bearer" = "static_bearer",
 ): BetaManagedAgentsCredential {
   return {
     id: credentialId,
     archived_at: null,
-    auth: {
-      mcp_server_url: mcpServerUrl,
-      type: "static_bearer",
-    },
+    auth:
+      authType === "mcp_oauth"
+        ? {
+            mcp_server_url: mcpServerUrl,
+            type: "mcp_oauth",
+          }
+        : {
+            mcp_server_url: mcpServerUrl,
+            type: "static_bearer",
+          },
     created_at: ISO_TIMESTAMP,
     display_name: "github-issue-agent auto",
     metadata: {},
@@ -91,6 +98,16 @@ function createCredentialRecord(
     updated_at: ISO_TIMESTAMP,
     vault_id: "vlt_test",
   };
+}
+
+function getMcpServerUrlFromCreateParams(params: CredentialCreateParams): string {
+  const credentialAuth = params.auth;
+
+  if (credentialAuth.type !== "static_bearer" && credentialAuth.type !== "mcp_oauth") {
+    throw new Error("Expected MCP credential auth");
+  }
+
+  return credentialAuth.mcp_server_url;
 }
 
 function createCredentialStream(
@@ -148,7 +165,7 @@ function createMockVaultClient(options: MockVaultClientOptions = {}) {
               options.createdCredentialIds?.[createdCredentialIndex] ??
                 options.createdCredentialId ??
                 "vcrd_created",
-              params.auth.mcp_server_url,
+              getMcpServerUrlFromCreateParams(params),
             );
           },
           list: (vaultId: string) => {
@@ -336,9 +353,12 @@ describe("vault helpers", () => {
     ]);
 
     expect(mockVaultClient.createCredentialInvocations).toHaveLength(1);
-    expect(mockVaultClient.createCredentialInvocations[0]?.params.auth.mcp_server_url).toBe(
-      GITHUB_MCP_URL,
-    );
+    const createdCredentialAuth = mockVaultClient.createCredentialInvocations[0]?.params.auth;
+    if (!createdCredentialAuth || createdCredentialAuth.type !== "static_bearer") {
+      throw new Error("Expected static_bearer credential auth");
+    }
+
+    expect(createdCredentialAuth.mcp_server_url).toBe(GITHUB_MCP_URL);
   });
 
   test("ensureMcpCredentials reports credentials as soon as they are created", async () => {
@@ -461,6 +481,81 @@ describe("vault helpers", () => {
         },
         "Updated existing MCP credential token; concurrent runs sharing this vault will overwrite each other's bearer token. Consider using a managed vault per run for repository-scoped credentials.",
       ],
+    ]);
+  });
+
+  test("ensureMcpCredentials does not update an mcp_oauth credential as static_bearer", async () => {
+    const mockVaultClient = createMockVaultClient({
+      createdCredentialId: "vcrd_bearer",
+      listedCredentials: [createCredentialRecord("vcrd_oauth", GITHUB_MCP_URL, "mcp_oauth")],
+    });
+    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
+
+    await expect(
+      vaultModule.ensureMcpCredentials(mockVaultClient.client, {
+        servers: [
+          {
+            ...SAMPLE_GITHUB_SERVER,
+            updateExisting: true,
+          },
+        ],
+        vaultId: "vlt_oauth",
+      }),
+    ).resolves.toEqual([
+      { credentialId: "vcrd_bearer", managedByUs: true, mcpServerUrl: GITHUB_MCP_URL },
+    ]);
+
+    expect(mockVaultClient.updateCredentialInvocations).toEqual([]);
+    expect(mockVaultClient.createCredentialInvocations).toEqual([
+      {
+        params: {
+          auth: {
+            mcp_server_url: GITHUB_MCP_URL,
+            token: SAMPLE_MCP_TOKEN,
+            type: "static_bearer",
+          },
+          display_name: "github-issue-agent auto (github)",
+        },
+        vaultId: "vlt_oauth",
+      },
+    ]);
+  });
+
+  test("ensureMcpCredentials refreshes static_bearer instead of mcp_oauth when both exist", async () => {
+    const mockVaultClient = createMockVaultClient({
+      listedCredentials: [
+        createCredentialRecord("vcrd_oauth", GITHUB_MCP_URL, "mcp_oauth"),
+        createCredentialRecord("vcrd_bearer", GITHUB_MCP_URL),
+      ],
+    });
+    const vaultModule = createVaultModule({ logger: createLogger({ level: "silent" }) });
+
+    await expect(
+      vaultModule.ensureMcpCredentials(mockVaultClient.client, {
+        servers: [
+          {
+            ...SAMPLE_GITHUB_SERVER,
+            updateExisting: true,
+          },
+        ],
+        vaultId: "vlt_mixed_auth",
+      }),
+    ).resolves.toEqual([
+      { credentialId: "vcrd_bearer", managedByUs: false, mcpServerUrl: GITHUB_MCP_URL },
+    ]);
+
+    expect(mockVaultClient.createCredentialInvocations).toEqual([]);
+    expect(mockVaultClient.updateCredentialInvocations).toEqual([
+      {
+        credentialId: "vcrd_bearer",
+        params: {
+          auth: {
+            token: SAMPLE_MCP_TOKEN,
+            type: "static_bearer",
+          },
+          vault_id: "vlt_mixed_auth",
+        },
+      },
     ]);
   });
 

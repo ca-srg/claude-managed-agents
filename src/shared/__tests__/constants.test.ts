@@ -17,7 +17,10 @@ type Equal<Left, Right> =
 type Expect<T extends true> = T;
 
 type _SupportedModelsIsReadonlyTuple = Expect<
-  Equal<typeof SUPPORTED_MODELS, readonly ["claude-opus-4-7", "claude-sonnet-4-6"]>
+  Equal<
+    typeof SUPPORTED_MODELS,
+    readonly ["claude-opus-4-7", "claude-fable-5", "claude-sonnet-4-6"]
+  >
 >;
 
 describe("TOOL_NAMES", () => {
@@ -30,8 +33,8 @@ describe("TOOL_NAMES", () => {
 });
 
 describe("SUPPORTED_MODELS", () => {
-  test("contains the supported model allowlist", () => {
-    expect(SUPPORTED_MODELS).toEqual(["claude-opus-4-7", "claude-sonnet-4-6"]);
+  test("contains the default model, Fable opt-in, and child model allowlist", () => {
+    expect(SUPPORTED_MODELS).toEqual(["claude-opus-4-7", "claude-fable-5", "claude-sonnet-4-6"]);
   });
 });
 
@@ -65,7 +68,8 @@ describe("MAX_THINKING_BUDGET_DEFERRED", () => {
   test("exports the deferred thinking sentinel", () => {
     expect(MAX_THINKING_BUDGET_DEFERRED).toEqual({
       todo: expect.stringMatching(/TODO\(sdk-thinking\)/),
-      reason: "@anthropic-ai/sdk@0.95.1 AgentCreateParams has no thinking field",
+      reason:
+        "thinking remains intentionally disabled for Managed Agents on @anthropic-ai/sdk@0.104.1",
     });
   });
 });

@@ -43,11 +43,19 @@ export type SessionUsageTokens = {
 };
 
 /**
- * Pricing as of 2026-04 per the Anthropic public pricing page. Keep in sync
+ * Pricing as of 2026-06 per the Anthropic public pricing page. Keep in sync
  * when models or prices change. Unknown models fall back to zero cost.
  */
 export const MODEL_PRICING_USD_PER_MTOK: Readonly<Record<string, ModelPricingPerMillionTokens>> =
   Object.freeze({
+    // Claude Fable 5 — opt-in parent/coordinator tier; not available for ZDR workspaces.
+    "claude-fable-5": {
+      input: 10,
+      cacheWrite5m: 12.5,
+      cacheWrite1h: 20,
+      cacheRead: 1,
+      output: 50,
+    },
     // Claude Opus 4.7 / 4.6 / 4.5 — current Opus tier.
     "claude-opus-4-7": {
       input: 5,

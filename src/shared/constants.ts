@@ -23,7 +23,7 @@ export const BUILTIN_GITHUB_MCP_NAME = "github";
  */
 export const BUILTIN_GITHUB_MCP_TOKEN_ENV = "GITHUB_APP_INSTALLATION_TOKEN";
 
-export const SUPPORTED_MODELS = ["claude-opus-4-7", "claude-sonnet-4-6"] as const;
+export const SUPPORTED_MODELS = ["claude-opus-4-7", "claude-fable-5", "claude-sonnet-4-6"] as const;
 
 /**
  * Base URL of the Claude Console. Managed Agents session detail pages live
@@ -50,14 +50,15 @@ export function sessionConsoleUrl(
 }
 
 /**
- * Sentinel marking the still-pending re-enablement of `thinking` in agent
- * definitions. `AgentCreateParams` in `@anthropic-ai/sdk@0.95.1` still does
- * not expose a `thinking` field — once it does, replace this with a real
- * MAX_THINKING_BUDGET map and wire it into parent/child definitions.
+ * Sentinel marking the intentionally deferred `thinking` configuration in
+ * agent definitions. `@anthropic-ai/sdk@0.104.1` contains the model IDs we use,
+ * but this app still does not opt Managed Agents into thinking budgets. If that
+ * changes, replace this with a real MAX_THINKING_BUDGET map and wire it into
+ * parent/child definitions.
  */
 export const MAX_THINKING_BUDGET_DEFERRED = Object.freeze({
-  todo: "TODO(sdk-thinking): re-enable thinking at MAX budget",
-  reason: "@anthropic-ai/sdk@0.95.1 AgentCreateParams has no thinking field",
+  todo: "TODO(sdk-thinking): keep thinking disabled until explicitly enabled",
+  reason: "thinking remains intentionally disabled for Managed Agents on @anthropic-ai/sdk@0.104.1",
 } as const);
 
 /**

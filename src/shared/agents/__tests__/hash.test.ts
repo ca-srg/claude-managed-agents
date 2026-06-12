@@ -7,7 +7,7 @@ function createAgentDefinition(overrides: Partial<AgentCreateParams> = {}): Agen
   return {
     name: "github-issue-orchestrator",
     description: "Coordinates GitHub issue decomposition and delivery.",
-    model: "claude-opus-4-7",
+    model: "claude-fable-5",
     system: "Parent prompt",
     mcp_servers: [
       {
@@ -86,7 +86,7 @@ describe("hashDefinition", () => {
         },
       ],
       system: "Parent prompt",
-      model: "claude-opus-4-7",
+      model: "claude-fable-5",
       description: "Coordinates GitHub issue decomposition and delivery.",
       name: "github-issue-orchestrator",
     };

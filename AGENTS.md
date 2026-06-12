@@ -22,7 +22,7 @@
 - path alias は `@/*` → `./src/*`。import は `@/shared/config` 形式を使う。
 - `tsconfig.json` の include は `src/**/*` と `test/**/*` のみ。`scripts/**/*` は通常 typecheck 対象外だが、`scripts/*.test.ts` は `bun test` で実行される。
 - Biome は formatter+linter 一体。対象は `src/**/*.ts(x)`, `tailwind.config.ts`, `package.json`。`test/e2e/prompts.e2e.*.js` は formatter/linter 無効。
-- `@anthropic-ai/sdk` は lockfile 上 `0.95.1`。Managed Agents の `thinking` / `budget_tokens` は未対応として無効化中。触る前に `TODO(sdk-thinking)`, `TODO(sdk-v0.91)`, `MAX_THINKING_BUDGET_DEFERRED` を検索する。
+- `@anthropic-ai/sdk` は lockfile 上 `0.104.1`。Managed Agents の `thinking` / `budget_tokens` は引き続き意図的に無効化中。触る前に `TODO(sdk-thinking)`, `TODO(sdk-v0.91)`, `MAX_THINKING_BUDGET_DEFERRED` を検索する。
 
 ## CI / GitHub Actions
 

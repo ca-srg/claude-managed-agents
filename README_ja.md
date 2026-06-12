@@ -120,9 +120,11 @@ const config: Config = {
 export default config;
 ```
 
+zero data retention (ZDR) 互換性を維持するため、デフォルトの parent model は `claude-opus-4-7` のままです。`claude-fable-5` は `models.parent` または `PARENT_MODEL` で明示的に opt-in できますが、Anthropic では ZDR 環境で利用できず、30 日 retention が必要です。
+
 ## コスト
 
-目安として、セッション 1 時間あたり約 `0.08 USD` のコストが発生します（2026-04 時点の `claude-opus-4-7` の session 課金に基づく）。
+コストは設定したモデルと Anthropic の最新料金に依存します。デフォルトの parent/child の組み合わせは `claude-opus-4-7` / `claude-sonnet-4-6` です。`claude-fable-5` に opt-in した場合は、そのモデルの料金と retention policy が適用されます。
 
 issue の分解からサブタスクの実装完了までの総コストは、issue の規模や生成される子タスクの数に依存します。Anthropic 側のモデル料金は変動するため、最新の価格は公式ドキュメントで確認してください。
 
