@@ -23,7 +23,11 @@ export const BUILTIN_GITHUB_MCP_NAME = "github";
  */
 export const BUILTIN_GITHUB_MCP_TOKEN_ENV = "GITHUB_APP_INSTALLATION_TOKEN";
 
-export const SUPPORTED_MODELS = ["claude-opus-4-7", "claude-fable-5", "claude-sonnet-4-6"] as const;
+export const SUPPORTED_MODELS = [
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-sonnet-4-6",
+] as const;
 
 /**
  * Base URL of the Claude Console. Managed Agents session detail pages live

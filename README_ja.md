@@ -197,7 +197,7 @@ WebUI から、エージェントの **system prompt を閲覧・編集** でき
 import type { Config } from "./src/shared/config";
 
 const config: Config = {
-  models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" },
+  models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" },
   maxSubIssues: 10,
   maxRunMinutes: 120,
   maxChildMinutes: 30,
@@ -212,11 +212,11 @@ const config: Config = {
 export default config;
 ```
 
-zero data retention (ZDR) 互換性を維持するため、デフォルトの parent model は `claude-opus-4-7` のままです。`claude-fable-5` は `models.parent` または `PARENT_MODEL` で明示的に opt-in できますが、Anthropic では ZDR 環境で利用できず、30 日 retention が必要です。
+デフォルトの parent model は `claude-opus-4-8`、child model は引き続き `claude-sonnet-4-6` です。Anthropic workspace で別モデルが利用可能な場合は、`models.parent` / `models.child` または `PARENT_MODEL` / `CHILD_MODEL` 環境変数で上書きできます。
 
 ## コスト
 
-コストは設定したモデルと Anthropic の最新料金に依存します。デフォルトの parent/child の組み合わせは `claude-opus-4-7` / `claude-sonnet-4-6` です。`claude-fable-5` に opt-in した場合は、そのモデルの料金と retention policy が適用されます。
+コストは設定したモデルと Anthropic の最新料金に依存します。デフォルトの parent/child の組み合わせは `claude-opus-4-8` / `claude-sonnet-4-6` です。
 
 issue の分解からサブタスクの実装完了までの総コストは、issue の規模や生成される子タスクの数に依存します。Anthropic 側のモデル料金は変動するため、最新の価格は公式ドキュメントで確認してください。
 

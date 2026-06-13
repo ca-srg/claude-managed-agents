@@ -20,7 +20,7 @@ import {
 
 const TEST_CONFIG: Config = {
   models: {
-    parent: "claude-fable-5",
+    parent: "claude-opus-4-8",
     child: "claude-sonnet-4-6",
   },
   maxSubIssues: 10,

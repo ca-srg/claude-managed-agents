@@ -2,16 +2,16 @@ import { describe, expect, test } from "bun:test";
 
 import { calculateCostUsd, getModelPricing, isKnownModel } from "../pricing";
 
-describe("Claude Fable 5 pricing", () => {
+describe("Claude Opus 4.8 pricing", () => {
   test("includes official per-million-token pricing", () => {
-    expect(getModelPricing("claude-fable-5")).toEqual({
-      input: 10,
-      cacheWrite5m: 12.5,
-      cacheWrite1h: 20,
-      cacheRead: 1,
-      output: 50,
+    expect(getModelPricing("claude-opus-4-8")).toEqual({
+      input: 5,
+      cacheWrite5m: 6.25,
+      cacheWrite1h: 10,
+      cacheRead: 0.5,
+      output: 25,
     });
-    expect(isKnownModel("claude-fable-5")).toBe(true);
+    expect(isKnownModel("claude-opus-4-8")).toBe(true);
   });
 
   test("calculates cost using the 5-minute cache-write rate", () => {
@@ -23,8 +23,8 @@ describe("Claude Fable 5 pricing", () => {
           cacheCreationInputTokens: 1_000_000,
           cacheReadInputTokens: 1_000_000,
         },
-        "claude-fable-5",
+        "claude-opus-4-8",
       ),
-    ).toBe(73.5);
+    ).toBe(36.75);
   });
 });

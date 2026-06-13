@@ -48,15 +48,14 @@ export type SessionUsageTokens = {
  */
 export const MODEL_PRICING_USD_PER_MTOK: Readonly<Record<string, ModelPricingPerMillionTokens>> =
   Object.freeze({
-    // Claude Fable 5 — opt-in parent/coordinator tier; not available for ZDR workspaces.
-    "claude-fable-5": {
-      input: 10,
-      cacheWrite5m: 12.5,
-      cacheWrite1h: 20,
-      cacheRead: 1,
-      output: 50,
+    // Claude Opus 4.8 / 4.7 / 4.6 / 4.5 — current Opus tier.
+    "claude-opus-4-8": {
+      input: 5,
+      cacheWrite5m: 6.25,
+      cacheWrite1h: 10,
+      cacheRead: 0.5,
+      output: 25,
     },
-    // Claude Opus 4.7 / 4.6 / 4.5 — current Opus tier.
     "claude-opus-4-7": {
       input: 5,
       cacheWrite5m: 6.25,
@@ -122,6 +121,14 @@ export const MODEL_PRICING_USD_PER_MTOK: Readonly<Record<string, ModelPricingPer
       cacheWrite1h: 2,
       cacheRead: 0.1,
       output: 5,
+    },
+    // Historical Claude Fable 5 pricing retained for previously recorded sessions only.
+    "claude-fable-5": {
+      input: 10,
+      cacheWrite5m: 12.5,
+      cacheWrite1h: 20,
+      cacheRead: 1,
+      output: 50,
     },
     // Legacy Haiku 3.x — included for completeness; rarely used in this app.
     "claude-haiku-3-5": {

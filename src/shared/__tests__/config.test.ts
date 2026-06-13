@@ -108,7 +108,7 @@ describe("loadConfig", () => {
           maxSubIssues: 7,
           models: {
             child: "claude-sonnet-4-6",
-            parent: "claude-fable-5",
+            parent: "claude-opus-4-8",
           },
           pr: {
             base: "release",
@@ -131,7 +131,7 @@ describe("loadConfig", () => {
         maxSubIssues: 7,
         models: {
           child: "claude-sonnet-4-6",
-          parent: "claude-fable-5",
+          parent: "claude-opus-4-8",
         },
         pr: {
           base: "release",
@@ -163,7 +163,7 @@ describe("loadConfig", () => {
     }
   });
 
-  it("returns ZDR-compatible default models when no config file or env overrides are present", async () => {
+  it("returns default models when no config file or env overrides are present", async () => {
     const directoryPath = createTempDir();
 
     try {
@@ -181,7 +181,7 @@ describe("loadConfig", () => {
 
             expect(config.models).toEqual({
               child: "claude-sonnet-4-6",
-              parent: "claude-opus-4-7",
+              parent: "claude-opus-4-8",
             });
           });
         },
@@ -201,10 +201,10 @@ describe("loadConfig", () => {
         '{ models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" }, maxSubIssues: 5 }',
       );
 
-      await withEnv({ PARENT_MODEL: "claude-fable-5" }, async () => {
+      await withEnv({ PARENT_MODEL: "claude-opus-4-8" }, async () => {
         const config = await loadConfig(configPath);
 
-        expect(config.models.parent).toBe("claude-fable-5");
+        expect(config.models.parent).toBe("claude-opus-4-8");
         expect(config.models.child).toBe("claude-sonnet-4-6");
         expect(config.maxSubIssues).toBe(5);
       });
@@ -220,7 +220,7 @@ describe("loadConfig", () => {
       const configPath = writeTsConfig(
         directoryPath,
         "console-workspace.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" } }',
+        '{ models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" } }',
       );
 
       await withEnv({ CONSOLE_WORKSPACE: "acme" }, async () => {
@@ -233,14 +233,14 @@ describe("loadConfig", () => {
     }
   });
 
-  it("applies defaults when optional fields are omitted and preserves explicit Fable opt-in", async () => {
+  it("applies defaults when optional fields are omitted and preserves an explicit parent model", async () => {
     const directoryPath = createTempDir();
 
     try {
       writeTsConfig(
         directoryPath,
         "github-issue-agent.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" } }',
+        '{ models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" } }',
       );
 
       await withWorkingDirectory(directoryPath, async () => {
@@ -257,7 +257,7 @@ describe("loadConfig", () => {
           maxSubIssues: 10,
           models: {
             child: "claude-sonnet-4-6",
-            parent: "claude-fable-5",
+            parent: "claude-opus-4-7",
           },
           pr: {
             draft: false,
@@ -276,7 +276,7 @@ describe("loadConfig", () => {
       const configPath = writeTsConfig(
         directoryPath,
         "thinking.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" }, thinking: { budget_tokens: 100 } }',
+        '{ models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" }, thinking: { budget_tokens: 100 } }',
       );
 
       const zodError = await expectZodError(loadConfig(configPath));
@@ -298,7 +298,7 @@ describe("loadConfig", () => {
       const configPath = writeTsConfig(
         directoryPath,
         "reasoning.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" }, reasoningEffort: "max" }',
+        '{ models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" }, reasoningEffort: "max" }',
       );
 
       const zodError = await expectZodError(loadConfig(configPath));
@@ -320,7 +320,7 @@ describe("loadConfig", () => {
       const configPath = writeTsConfig(
         directoryPath,
         "budget.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" }, budget_tokens: 100 }',
+        '{ models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" }, budget_tokens: 100 }',
       );
 
       const zodError = await expectZodError(loadConfig(configPath));
@@ -342,7 +342,7 @@ describe("loadConfig", () => {
       const configPath = writeTsConfig(
         directoryPath,
         "unknown.config.ts",
-        '{ models: { parent: "claude-fable-5", child: "claude-sonnet-4-6" }, unexpected: true }',
+        '{ models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" }, unexpected: true }',
       );
 
       const zodError = await expectZodError(loadConfig(configPath));

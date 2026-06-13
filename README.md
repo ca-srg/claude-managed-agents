@@ -197,7 +197,7 @@ Customize behavior by creating a `github-issue-agent.config.ts` file.
 import type { Config } from "./src/shared/config";
 
 const config: Config = {
-  models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" },
+  models: { parent: "claude-opus-4-8", child: "claude-sonnet-4-6" },
   maxSubIssues: 10,
   maxRunMinutes: 120,
   maxChildMinutes: 30,
@@ -212,11 +212,11 @@ const config: Config = {
 export default config;
 ```
 
-The default parent model remains `claude-opus-4-7` for zero data retention (ZDR) compatibility. `claude-fable-5` is supported as an explicit opt-in via `models.parent` or `PARENT_MODEL`, but Anthropic does not make it available under ZDR and it requires 30-day retention.
+The default parent model is `claude-opus-4-8`; the default child model remains `claude-sonnet-4-6`. You can override either model with `models.parent` / `models.child` or the `PARENT_MODEL` / `CHILD_MODEL` environment variables when your Anthropic workspace supports a different model.
 
 ## Cost
 
-Costs depend on the configured models and current Anthropic pricing. The default parent/child pair is `claude-opus-4-7` / `claude-sonnet-4-6`; opting into `claude-fable-5` uses that model's pricing and retention policy.
+Costs depend on the configured models and current Anthropic pricing. The default parent/child pair is `claude-opus-4-8` / `claude-sonnet-4-6`.
 
 The total cost from issue decomposition to sub-task completion depends on the size of the issue and the number of child tasks generated. Anthropic's pricing changes over time, so check the official docs for the latest rates.
 

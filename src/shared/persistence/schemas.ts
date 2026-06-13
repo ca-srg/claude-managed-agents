@@ -99,7 +99,7 @@ export const SessionResultSchema = z.object({
   lastAgentMessageText: NonEmptyStringSchema.optional(),
   lastEventId: z.union([NonEmptyStringSchema, z.undefined()]),
   /**
-   * Model identifier used for cost attribution (e.g. `claude-fable-5`).
+   * Model identifier used for cost attribution (e.g. `claude-opus-4-8`).
    * Undefined when the caller did not supply a model (e.g. unit tests). Cost
    * cannot be computed without a model, but token counts still aggregate.
    */
