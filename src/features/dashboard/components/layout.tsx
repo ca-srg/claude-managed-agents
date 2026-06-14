@@ -22,7 +22,7 @@ export const Layout: FC<LayoutProps> = (props) => {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>
-          {props.title} · {t("github-issue dashboard")}
+          {props.title} · {t("maestro dashboard")}
         </title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -41,7 +41,7 @@ export const Layout: FC<LayoutProps> = (props) => {
                   href="/"
                   class="font-mono font-semibold tracking-tight text-neutral-900 hover:text-brand-600 transition-colors"
                 >
-                  github-issue
+                  maestro
                   <span class="text-neutral-400 font-normal ml-2">{t("dashboard")}</span>
                 </a>
               </div>

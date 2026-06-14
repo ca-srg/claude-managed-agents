@@ -84,7 +84,7 @@ describe("buildParentDefinition", () => {
     expect("thinking" in parentDefinition).toBe(false);
     expect(parentDefinition.model).toBe(TEST_CONFIG.models.parent);
     expect(parentDefinition.metadata).toEqual({
-      app: "github-issue-agent",
+      app: "maestro",
       role: "parent",
       thinking_deferred: "sdk-thinking",
     });

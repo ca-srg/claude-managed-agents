@@ -1,21 +1,21 @@
-# github-issue-agent
+# maestro
 
 [English](README.md) | **日本語**
 
 GitHub issue を自動的に分解し、実装 PR を作成する HTTP サーバー型エージェント。
 WebUI から `--issue 21925 --repo CyberAgentSRG/server` 相当を実行できる。
 
-![github-issue-agent — GitHub issue を分解し、PR を自動生成。](docs/ogp.jpeg)
+![maestro — GitHub issue を分解し、PR を自動生成。](docs/ogp.jpeg)
 
 ## 概要
 
-`github-issue-agent` は、GitHub issue を親タスクとして受け取り、それを複数の子 issue（サブタスク）に自動分解し、最終的に 1 つのプルリクエストにまとめて実装を完了させるためのツールです。
+`maestro` は、GitHub issue を親タスクとして受け取り、それを複数の子 issue（サブタスク）に自動分解し、最終的に 1 つのプルリクエストにまとめて実装を完了させるためのツールです。
 
 Anthropic Managed Agents API (`@anthropic-ai/sdk`) を利用しており、エージェントが GitHub リポジトリを直接操作してタスクを遂行します。
 
 ## アーキテクチャ
 
-`github-issue-agent` は、SQLite をローカルの source of truth とする Bun + Hono サービスです。Run は WebUI/API または GitHub trigger poller から開始され、直列の run queue が orchestration を実行します。各実行では repo-scoped な GitHub App token を解決し、Anthropic の cloud environment、Vault に保存された MCP credentials、versioned な parent/child agent を準備してから Managed Agents session を作成します。Parent coordinator は Managed Agents の multi-agent thread 経由で child implementer に実装作業を委譲し、アプリ側の custom tool は sub-issue と最終 PR を作成します。MCP 呼び出しは Anthropic 側から設定済み MCP server に送られます。
+`maestro` は、SQLite をローカルの source of truth とする Bun + Hono サービスです。Run は WebUI/API または GitHub trigger poller から開始され、直列の run queue が orchestration を実行します。各実行では repo-scoped な GitHub App token を解決し、Anthropic の cloud environment、Vault に保存された MCP credentials、versioned な parent/child agent を準備してから Managed Agents session を作成します。Parent coordinator は Managed Agents の multi-agent thread 経由で child implementer に実装作業を委譲し、アプリ側の custom tool は sub-issue と最終 PR を作成します。MCP 呼び出しは Anthropic 側から設定済み MCP server に送られます。
 
 ```mermaid
 flowchart TD
@@ -35,14 +35,14 @@ flowchart TD
   end
 
   DB[(SQLite dashboard.db<br/>runs / sessions / events<br/>prompts / repositories / MCP servers<br/>repo envs / agent registry)]
-  State[".github-issue-agent<br/>runtime state + locks"]
+  State[".maestro<br/>runtime state + locks"]
 
   subgraph Anthropic["Anthropic Claude Managed Agents"]
     Env["Cloud environment"]
     Vault["Vault<br/>MCP credentials"]
     AgentRegistry["Agent registry<br/>create/update versions"]
-    Parent["Parent coordinator agent<br/>github-issue-orchestrator"]
-    Child["Child implementer agent<br/>github-issue-implementer"]
+    Parent["Parent coordinator agent<br/>maestro-orchestrator"]
+    Child["Child implementer agent<br/>maestro-implementer"]
     Session["Run session<br/>primary + child threads"]
   end
 
@@ -133,7 +133,7 @@ bun run start
 | ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `PORT`                        | `3000`                             | listen port                                                                                                        |
 | `HOST`                        | `127.0.0.1`                        | bind host (set to `0.0.0.0` to expose)                                                                             |
-| `DB_PATH`                     | `.github-issue-agent/dashboard.db` | SQLite db                                                                                                          |
+| `DB_PATH`                     | `.maestro/dashboard.db`            | SQLite db                                                                                                          |
 | `CONFIG_PATH`                 | (none)                             | optional config TS path                                                                                            |
 | `ANTHROPIC_API_KEY`           | (required)                         | Anthropic API key                                                                                                  |
 | `GITHUB_APP_ID`               | (required)                         | GitHub App ID                                                                                                      |
@@ -185,13 +185,13 @@ Event kinds: `phase`, `session`, `subIssue`, `log`, `complete`, `error`.
 
 ## Prompt Management
 
-WebUI から、エージェントの **system prompt を閲覧・編集** できます。編集された値は SQLite (`.github-issue-agent/dashboard.db`) に永続化され、次回実行時に DB から読み込まれて Anthropic 側の agent 定義に自動反映されます。
+WebUI から、エージェントの **system prompt を閲覧・編集** できます。編集された値は SQLite (`.maestro/dashboard.db`) に永続化され、次回実行時に DB から読み込まれて Anthropic 側の agent 定義に自動反映されます。
 
 ヘッダーの **Prompts** ナビからプロンプト一覧へ遷移 (`/prompts`) して編集可能です。
 
 ## 設定
 
-設定ファイル `github-issue-agent.config.ts` を作成することで、動作をカスタマイズできます。
+設定ファイル `maestro.config.ts` を作成することで、動作をカスタマイズできます。
 
 ```ts
 import type { Config } from "./src/shared/config";
@@ -235,6 +235,6 @@ E2E=1 TEST_REPO=<owner>/<repo> TEST_ISSUE=<n> bun run scripts/e2e-real.ts
 
 ## Troubleshooting
 
-- **ロックファイルが残った場合**: `rm .github-issue-agent/run.lock.lock`
+- **ロックファイルが残った場合**: `rm .maestro/run.lock.lock`
 - **WebUI に履歴が出ない**: 1 度 issue を実行して DB に書き込む必要があります
 - **ポート競合**: `PORT=3097 bun run start`

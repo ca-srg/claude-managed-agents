@@ -8,7 +8,7 @@ import type { Logger } from "pino";
 
 import { createLogger } from "@/shared/logging";
 
-const AUTO_DISPLAY_NAME = "github-issue-agent auto";
+const AUTO_DISPLAY_NAME = "maestro auto";
 
 export type EnsureVaultContext = {
   configVaultId?: string;

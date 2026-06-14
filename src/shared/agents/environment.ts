@@ -10,12 +10,12 @@ import type {
 import { type RepoEnvironmentPackages, RepoSlugSchema } from "@/shared/persistence/schemas";
 import type { DefaultEnvironmentState } from "@/shared/types";
 
-const DEFAULT_ENVIRONMENT_NAME = "github-issue-agent-env";
+const DEFAULT_ENVIRONMENT_NAME = "maestro-env";
 const BASE_PACKAGES = {
   apt: ["git"] as const,
   npm: ["bun"] as const,
 } as const;
-const REPO_ENV_NAME_PREFIX = "gh-iea-";
+const REPO_ENV_NAME_PREFIX = "maestro-";
 const REPO_ENV_NAME_MAX_LEN = 120;
 
 type EnvironmentCacheState =

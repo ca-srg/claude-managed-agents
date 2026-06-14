@@ -35,7 +35,7 @@ const TEST_CONFIG: Config = {
 };
 
 function createTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "ghi-registry-"));
+  return mkdtempSync(join(tmpdir(), "maestro-registry-"));
 }
 
 function cleanupTempDir(directoryPath: string): void {
@@ -87,7 +87,7 @@ function createRegistryHarness(): {
 }
 
 function stateFilePath(directoryPath: string): string {
-  return join(directoryPath, ".github-issue-agent", "state.json");
+  return join(directoryPath, ".maestro", "state.json");
 }
 
 function readPersistedState(db: TestDbModule) {

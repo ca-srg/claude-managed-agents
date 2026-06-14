@@ -16,7 +16,7 @@ type TranslationParams = Record<string, boolean | number | string | null | undef
 const i18nContext = new AsyncLocalStorage<I18nContext>();
 
 const JA_TRANSLATIONS: Record<string, string> = {
-  "github-issue dashboard": "github-issue ダッシュボード",
+  "maestro dashboard": "maestro ダッシュボード",
   dashboard: "ダッシュボード",
   Runs: "実行",
   "New Run": "新規実行",

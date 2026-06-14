@@ -7,7 +7,7 @@ import { ZodError } from "zod";
 import { loadConfig } from "../config";
 
 function createTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "github-issue-config-"));
+  return mkdtempSync(join(tmpdir(), "maestro-config-"));
 }
 
 function cleanupTempDir(directoryPath: string): void {
@@ -96,7 +96,7 @@ describe("loadConfig", () => {
     try {
       const configPath = writeJsonConfig(
         directoryPath,
-        "github-issue-agent.config.json",
+        "maestro.config.json",
         JSON.stringify({
           commitStyle: "squash",
           git: {
@@ -239,7 +239,7 @@ describe("loadConfig", () => {
     try {
       writeTsConfig(
         directoryPath,
-        "github-issue-agent.config.ts",
+        "maestro.config.ts",
         '{ models: { parent: "claude-opus-4-7", child: "claude-sonnet-4-6" } }',
       );
 

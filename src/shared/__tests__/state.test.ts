@@ -23,7 +23,7 @@ import {
 import type { AgentState, RunState } from "../types";
 
 function createTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "ghi-state-"));
+  return mkdtempSync(join(tmpdir(), "maestro-state-"));
 }
 
 function cleanupTempDir(directoryPath: string): void {
@@ -58,7 +58,7 @@ function createRunState(runId = "run-123", overrides: Partial<RunState> = {}): R
   return {
     runId,
     issueNumber: 42,
-    repo: "rluisr/claude-managed-agents",
+    repo: "rluisr/maestro",
     branch: "task/state-lock",
     startedAt: "2026-04-23T00:00:00.000Z",
     subIssues: [
@@ -74,15 +74,15 @@ function createRunState(runId = "run-123", overrides: Partial<RunState> = {}): R
 }
 
 function stateFilePath(directoryPath: string): string {
-  return join(directoryPath, ".github-issue-agent", "state.json");
+  return join(directoryPath, ".maestro", "state.json");
 }
 
 function runStateFilePath(directoryPath: string, runId: string): string {
-  return join(directoryPath, ".github-issue-agent", `run-${runId}.json`);
+  return join(directoryPath, ".maestro", `run-${runId}.json`);
 }
 
 function lockDirectoryPath(directoryPath: string): string {
-  return join(directoryPath, ".github-issue-agent", "run.lock.lock");
+  return join(directoryPath, ".maestro", "run.lock.lock");
 }
 
 describe("state module", () => {

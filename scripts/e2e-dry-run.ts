@@ -153,7 +153,7 @@ function formatDiagnostics(handle: ServerHandle | undefined): string {
 
 async function spawnServer(config: DryRunConfig): Promise<ServerHandle> {
   const port = randomHighPort();
-  const dbDir = await mkdtemp(join(tmpdir(), "github-issue-agent-dry-run-"));
+  const dbDir = await mkdtemp(join(tmpdir(), "maestro-dry-run-"));
   const dbPath = join(dbDir, "dashboard.db");
   let stdout = "";
   let stderr = "";

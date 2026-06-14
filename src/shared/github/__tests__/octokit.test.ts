@@ -109,7 +109,7 @@ describe("createGitHubClient", () => {
     }
 
     expect(userAgentHeader).toMatch(
-      new RegExp(`github-issue-agent/${packageJson.version.replaceAll(".", "\\.")}`),
+      new RegExp(`maestro/${packageJson.version.replaceAll(".", "\\.")}`),
     );
   });
 

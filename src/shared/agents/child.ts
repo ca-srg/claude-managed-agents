@@ -6,7 +6,11 @@ import type {
 
 import { toEnabledMcpServerParams, toEnabledMcpToolsetParams } from "@/shared/agents/mcp";
 import type { Config } from "@/shared/config";
-import { AGENT_TOOLSET_VERSION, MAX_THINKING_BUDGET_DEFERRED } from "@/shared/constants";
+import {
+  AGENT_TOOLSET_VERSION,
+  CHILD_AGENT_NAME,
+  MAX_THINKING_BUDGET_DEFERRED,
+} from "@/shared/constants";
 import type { McpServer } from "@/shared/persistence/db";
 
 // Runtime guard: ensures the deferral sentinel is preserved (prevents tree-shaking + keeps grep-ability at import site).
@@ -25,7 +29,7 @@ const AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
 };
 
 const CHILD_METADATA = {
-  app: "github-issue-agent",
+  app: "maestro",
   role: "child",
   thinking_deferred: "sdk-v0.91",
 } as const;
@@ -53,7 +57,7 @@ export function buildChildDefinition(
   const mcpToolsetParams = toEnabledMcpToolsetParams(mcpServers);
 
   return {
-    name: "github-issue-implementer",
+    name: CHILD_AGENT_NAME,
     description: "Implements one delegated GitHub issue task and validates the branch.",
     model: cfg.models.child,
     system: prompts.child,

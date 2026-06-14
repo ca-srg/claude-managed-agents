@@ -43,10 +43,7 @@ export const ConfigSchema = z
 
 export type Config = z.infer<typeof ConfigSchema>;
 
-const DEFAULT_CONFIG_FILE_NAMES = [
-  "github-issue-agent.config.ts",
-  "github-issue-agent.config.json",
-];
+const DEFAULT_CONFIG_FILE_NAMES = ["maestro.config.ts", "maestro.config.json"];
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

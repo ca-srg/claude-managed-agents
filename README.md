@@ -1,21 +1,21 @@
-# github-issue-agent
+# maestro
 
 **English** | [日本語](README_ja.md)
 
 An HTTP server agent that automatically decomposes GitHub issues and ships implementation PRs.
 The WebUI lets you trigger the equivalent of `--issue 21925 --repo CyberAgentSRG/server` from your browser.
 
-![github-issue-agent — Decompose GitHub issues. Ship pull requests. Autonomously.](docs/ogp.jpeg)
+![maestro — Decompose GitHub issues. Ship pull requests. Autonomously.](docs/ogp.jpeg)
 
 ## Overview
 
-`github-issue-agent` accepts a GitHub issue as a parent task, automatically breaks it down into multiple child issues (sub-tasks), implements each of them, and finally consolidates the work into a single pull request.
+`maestro` accepts a GitHub issue as a parent task, automatically breaks it down into multiple child issues (sub-tasks), implements each of them, and finally consolidates the work into a single pull request.
 
 It is built on top of the Anthropic Managed Agents API (`@anthropic-ai/sdk`); the agents operate on your GitHub repository directly to drive each task to completion.
 
 ## Architecture
 
-`github-issue-agent` runs as a Bun + Hono service with SQLite as its local source of truth. A run can be started from the WebUI/API or by the GitHub trigger poller, then a serial run queue executes the orchestration. Each execution resolves a repo-scoped GitHub App token, prepares the Anthropic cloud environment, vault-backed MCP credentials, and versioned parent/child agents, then creates a Managed Agents session. The parent coordinator delegates implementation work to the child implementer through Managed Agents multi-agent threads; app-side custom tools create sub-issues and the final PR, while MCP calls go from Anthropic to the configured MCP servers.
+`maestro` runs as a Bun + Hono service with SQLite as its local source of truth. A run can be started from the WebUI/API or by the GitHub trigger poller, then a serial run queue executes the orchestration. Each execution resolves a repo-scoped GitHub App token, prepares the Anthropic cloud environment, vault-backed MCP credentials, and versioned parent/child agents, then creates a Managed Agents session. The parent coordinator delegates implementation work to the child implementer through Managed Agents multi-agent threads; app-side custom tools create sub-issues and the final PR, while MCP calls go from Anthropic to the configured MCP servers.
 
 ```mermaid
 flowchart TD
@@ -35,14 +35,14 @@ flowchart TD
   end
 
   DB[(SQLite dashboard.db<br/>runs / sessions / events<br/>prompts / repositories / MCP servers<br/>repo envs / agent registry)]
-  State[".github-issue-agent<br/>runtime state + locks"]
+  State[".maestro<br/>runtime state + locks"]
 
   subgraph Anthropic["Anthropic Claude Managed Agents"]
     Env["Cloud environment"]
     Vault["Vault<br/>MCP credentials"]
     AgentRegistry["Agent registry<br/>create/update versions"]
-    Parent["Parent coordinator agent<br/>github-issue-orchestrator"]
-    Child["Child implementer agent<br/>github-issue-implementer"]
+    Parent["Parent coordinator agent<br/>maestro-orchestrator"]
+    Child["Child implementer agent<br/>maestro-implementer"]
     Session["Run session<br/>primary + child threads"]
   end
 
@@ -133,7 +133,7 @@ Claude Managed Agents reach your local MCP servers), see
 | ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `PORT`                        | `3000`                             | listen port                                                                                                  |
 | `HOST`                        | `127.0.0.1`                        | bind host (set to `0.0.0.0` to expose)                                                                       |
-| `DB_PATH`                     | `.github-issue-agent/dashboard.db` | SQLite db                                                                                                    |
+| `DB_PATH`                     | `.maestro/dashboard.db`            | SQLite db                                                                                                    |
 | `CONFIG_PATH`                 | (none)                             | optional config TS path                                                                                      |
 | `ANTHROPIC_API_KEY`           | (required)                         | Anthropic API key                                                                                            |
 | `GITHUB_APP_ID`               | (required)                         | GitHub App ID                                                                                                |
@@ -185,13 +185,13 @@ Event kinds: `phase`, `session`, `subIssue`, `log`, `complete`, `error`.
 
 ## Prompt Management
 
-You can **view and edit the agents' system prompts** from the WebUI. Edited values are persisted to SQLite (`.github-issue-agent/dashboard.db`) and automatically loaded into the Anthropic-side agent definition on the next run.
+You can **view and edit the agents' system prompts** from the WebUI. Edited values are persisted to SQLite (`.maestro/dashboard.db`) and automatically loaded into the Anthropic-side agent definition on the next run.
 
 Open the **Prompts** tab in the header to navigate to the prompt list (`/prompts`) and edit them.
 
 ## Configuration
 
-Customize behavior by creating a `github-issue-agent.config.ts` file.
+Customize behavior by creating a `maestro.config.ts` file.
 
 ```ts
 import type { Config } from "./src/shared/config";
@@ -234,6 +234,6 @@ See `docs/e2e-setup.md` for details.
 
 ## Troubleshooting
 
-- **Stale lockfile**: `rm .github-issue-agent/run.lock.lock`
+- **Stale lockfile**: `rm .maestro/run.lock.lock`
 - **No history in the WebUI**: you need to run an issue at least once to populate the DB
 - **Port conflict**: `PORT=3097 bun run start`

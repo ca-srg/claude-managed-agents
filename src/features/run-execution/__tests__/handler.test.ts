@@ -409,7 +409,7 @@ describe("runIssueOrchestration", () => {
           createToolHandlerContext(),
         );
         options.threadObserver?.onThreadCreated?.({
-          agentName: "github-issue-implementer",
+          agentName: "maestro-implementer",
           sessionThreadId: "thread-1",
         });
         await options.handlers.create_final_pr?.(
@@ -1607,7 +1607,7 @@ describe("runIssueOrchestration", () => {
           createToolHandlerContext(),
         );
         options.threadObserver?.onThreadCreated?.({
-          agentName: "github-issue-implementer",
+          agentName: "maestro-implementer",
           sessionThreadId: "thread-1",
         });
         await options.handlers.create_final_pr?.(

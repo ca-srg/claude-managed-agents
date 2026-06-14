@@ -175,10 +175,10 @@ configure_agent_state() {
   # mounted Fly volume. STATE_FILE / RUN_LOCK in src/shared/constants.ts are
   # resolved against process.cwd() (= /app), so we redirect that subdirectory
   # to the app data directory via a symlink instead of editing the constants.
-  if [ ! -L /app/.github-issue-agent ] \
-    || [ "$(readlink /app/.github-issue-agent)" != "$AGENT_STATE_DIR" ]; then
-    rm -rf /app/.github-issue-agent
-    ln -sfn "$AGENT_STATE_DIR" /app/.github-issue-agent
+  if [ ! -L /app/.maestro ] \
+    || [ "$(readlink /app/.maestro)" != "$AGENT_STATE_DIR" ]; then
+    rm -rf /app/.maestro
+    ln -sfn "$AGENT_STATE_DIR" /app/.maestro
   fi
 }
 

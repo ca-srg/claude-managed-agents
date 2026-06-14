@@ -271,7 +271,7 @@ describe("runIssueOrchestration run-events integration", () => {
           createToolHandlerContext(),
         );
         options.threadObserver?.onThreadCreated?.({
-          agentName: "github-issue-implementer",
+          agentName: "maestro-implementer",
           sessionThreadId: "thread-1",
         });
         await options.handlers.create_final_pr?.(
@@ -324,7 +324,7 @@ describe("runIssueOrchestration run-events integration", () => {
       runEvents: runEvents.runEvents,
       runSession: (async (_client, options) => {
         options.threadObserver?.onThreadCreated?.({
-          agentName: "github-issue-implementer",
+          agentName: "maestro-implementer",
           sessionThreadId: "thread-1",
         });
         await options.handlers.create_final_pr?.(
@@ -364,7 +364,7 @@ describe("runIssueOrchestration run-events integration", () => {
     expect(parentEvents[0]?.details).toEqual({ role: "parent" });
     const threadCreatedEvent = parentEvents.find((event) => event.kind === "thread_created");
     expect(threadCreatedEvent?.details).toEqual({
-      agentName: "github-issue-implementer",
+      agentName: "maestro-implementer",
       role: "child",
       sessionThreadId: "thread-1",
     });

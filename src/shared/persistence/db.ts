@@ -125,7 +125,7 @@ type DatabaseConstructor = new (databasePath: string) => DatabaseLike;
 const require = createRequire(import.meta.url);
 const { Database } = require("bun:sqlite") as { Database: DatabaseConstructor };
 
-const DEFAULT_DB_PATH = ".github-issue-agent/dashboard.db";
+const DEFAULT_DB_PATH = ".maestro/dashboard.db";
 const DEFAULT_LIST_RUNS_LIMIT = 100;
 const RUN_ID_SCHEMA = RunStateSchema.shape.runId;
 const REPO_SCHEMA = RepoSlugSchema;

@@ -5,6 +5,7 @@
 .gitattributes
 
 # Local runtime / agent state
+.maestro
 .github-issue-agent
 .sisyphus
 .playwright-cli

@@ -75,9 +75,9 @@ export const TOOL_NAMES = {
   CREATE_SUB_ISSUE: "create_sub_issue",
 } as const;
 
-export const STATE_FILE = ".github-issue-agent/state.json";
+export const STATE_FILE = ".maestro/state.json";
 
-export const RUN_LOCK = ".github-issue-agent/run.lock";
+export const RUN_LOCK = ".maestro/run.lock";
 
 /**
  * Public name of the implementer (sub-agent) registered with the Managed
@@ -85,10 +85,10 @@ export const RUN_LOCK = ".github-issue-agent/run.lock";
  * thread messages — we keep the name centrally so prompt template, agent
  * registration, and event filtering stay in lockstep.
  */
-export const CHILD_AGENT_NAME = "github-issue-implementer";
+export const CHILD_AGENT_NAME = "maestro-implementer";
 
 /**
  * Public name of the coordinator (parent) agent. Used both for registration
  * and for filtering thread events that originate from the primary thread.
  */
-export const PARENT_AGENT_NAME = "github-issue-orchestrator";
+export const PARENT_AGENT_NAME = "maestro-orchestrator";

@@ -10,7 +10,7 @@ describe("buildParentPrompt", () => {
       authorEmail: "claude-agent@users.noreply.github.com",
     },
     repoOwner: "rluisr",
-    repoName: "claude-managed-agents",
+    repoName: "maestro",
     parentIssueNumber: 123,
     branch: "agent/issue-123/fix-bug",
     baseBranch: "main",
@@ -22,20 +22,20 @@ describe("buildParentPrompt", () => {
     expect(prompt).toContain(
       "You are the ORCHESTRATOR (coordinator agent). You do not edit code or run tests directly.",
     );
-    expect(prompt).toContain("GitHub issue #123 in rluisr/claude-managed-agents");
+    expect(prompt).toContain("GitHub issue #123 in rluisr/maestro");
     expect(prompt).toContain("no more than 10 atomic sub-tasks");
     expect(prompt).toContain("call the `create_sub_issue` custom tool");
-    expect(prompt).toContain("delegate to the `github-issue-implementer` sub-agent");
+    expect(prompt).toContain("delegate to the `maestro-implementer` sub-agent");
     expect(prompt).toContain(
       "MUST NOT call any `spawn_child_task` custom tool — it has been removed",
     );
     expect(prompt).toContain("GitHub App GitHub Operations skill");
     expect(prompt).toContain("GitHub MCP/API issue-read tool");
     expect(prompt).toContain(
-      "git -C /workspace/claude-managed-agents fetch && (git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git -C /workspace/claude-managed-agents checkout -B agent/issue-123/fix-bug origin/main)",
+      "git -C /workspace/maestro fetch && (git -C /workspace/maestro checkout -B agent/issue-123/fix-bug origin/agent/issue-123/fix-bug || git -C /workspace/maestro checkout -B agent/issue-123/fix-bug origin/main)",
     );
     expect(prompt).toContain(
-      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
+      "(git -C /workspace/maestro pull --ff-only origin agent/issue-123/fix-bug || true)",
     );
     expect(prompt).toContain("Configured commit style = conventional");
     expect(prompt).toContain(
@@ -90,7 +90,7 @@ describe("buildParentPrompt", () => {
       "Emit a final `agent.message` containing the resulting PR URL and stop",
     );
     expect(prompt).toContain("MUST NOT edit files directly");
-    expect(prompt).toContain("MUST NOT delegate to `github-issue-implementer` more than 10 times");
+    expect(prompt).toContain("MUST NOT delegate to `maestro-implementer` more than 10 times");
     expect(prompt).toContain(
       "MUST handle `create_sub_issue` returning an existing (deduplicated) sub-issue without error",
     );
@@ -114,7 +114,7 @@ describe("buildParentPrompt", () => {
     const prompt = buildParentPrompt(params);
 
     expect(prompt).toContain("no more than 5 atomic sub-tasks");
-    expect(prompt).toContain("MUST NOT delegate to `github-issue-implementer` more than 5 times");
+    expect(prompt).toContain("MUST NOT delegate to `maestro-implementer` more than 5 times");
     expect(prompt).toContain("Configured commit style = gitmoji");
     expect(prompt).toContain("Git identity = custom-bot/custom@example.com");
     expect(prompt).toContain("origin/develop");
@@ -131,12 +131,12 @@ describe("buildParentPrompt", () => {
     const checkoutCommand = prompt.match(/checkout-first: `([^`]+)`/)?.[1];
 
     expect(checkoutCommand).toBeDefined();
-    expect(checkoutCommand).toContain("git -C /workspace/claude-managed-agents fetch &&");
+    expect(checkoutCommand).toContain("git -C /workspace/maestro fetch &&");
     expect(checkoutCommand).toContain(
-      "(git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true)",
+      "(git -C /workspace/maestro pull --ff-only origin agent/issue-123/fix-bug || true)",
     );
     expect(checkoutCommand).not.toContain(
-      "origin/main) && git -C /workspace/claude-managed-agents pull --ff-only origin agent/issue-123/fix-bug || true",
+      "origin/main) && git -C /workspace/maestro pull --ff-only origin agent/issue-123/fix-bug || true",
     );
     expect(checkoutCommand?.endsWith("|| true)")).toBe(true);
   });
@@ -175,7 +175,7 @@ describe("buildParentPrompt", () => {
       "MUST NOT pass any `method`, `action`, `mode`, or similar create/update selector argument",
     );
     expect(prompt).toContain(
-      "For each created/reused Linear child/sub-issue, delegate to the `github-issue-implementer` sub-agent",
+      "For each created/reused Linear child/sub-issue, delegate to the `maestro-implementer` sub-agent",
     );
     expect(prompt).toContain("Linear child/sub-issue identifier or id");
     expect(prompt).toContain("Stable `taskId` and `parentId`");

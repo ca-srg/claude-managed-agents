@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "github-issue",
+      "name": "maestro",
       "dependencies": {
         "@anthropic-ai/sdk": "0.104.1",
         "@ngrok/ngrok": "^1.7.0",

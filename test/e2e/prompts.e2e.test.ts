@@ -147,7 +147,7 @@ const TEST_GITHUB_APP_PRIVATE_KEY = [
 
 beforeAll(async () => {
   const port = randomHighPort();
-  dbDir = await mkdtemp(join(tmpdir(), "github-issue-agent-prompts-e2e-"));
+  dbDir = await mkdtemp(join(tmpdir(), "maestro-prompts-e2e-"));
   const dbPath = join(dbDir, "dashboard.db");
   baseUrl = `http://127.0.0.1:${port}`;
 

@@ -17,7 +17,7 @@ type PackageManifest = {
 const packageManifest = JSON.parse(
   readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
 ) as PackageManifest;
-const userAgent = `github-issue-agent/${packageManifest.version}`;
+const userAgent = `maestro/${packageManifest.version}`;
 
 function createThrottleHandler(limitName: string, logger?: Logger) {
   return (

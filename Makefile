@@ -1,4 +1,4 @@
-FLY_APP ?= claude-managed-agents
+FLY_APP ?= maestro
 FLY_CONFIG ?= fly.toml
 
 # Keep internal MCP endpoints out of the committed root mcp-proxy.json.
@@ -6,7 +6,7 @@ FLY_CONFIG ?= fly.toml
 # volume path that fly.toml/start.sh read at runtime. /data persists across
 # machine restarts; /etc lives on the ephemeral image rootfs and would be
 # wiped (reset to the baked-in template) on every restart.
-LOCAL_MCP_PROXY_CONFIG ?= .github-issue-agent/mcp-proxy.json
+LOCAL_MCP_PROXY_CONFIG ?= .maestro/mcp-proxy.json
 REMOTE_MCP_PROXY_CONFIG ?= /data/mcp-proxy.json
 REMOTE_MCP_PROXY_DIR = $(patsubst %/,%,$(dir $(REMOTE_MCP_PROXY_CONFIG)))
 REMOTE_MCP_PROXY_TMP ?= /tmp/mcp-proxy.$(shell date +%Y%m%d%H%M%S).json
@@ -22,7 +22,7 @@ help:
 		'' \
 		'Override examples:' \
 		'  make fly-mcp-proxy-upload FLY_APP=my-app' \
-		'  make fly-mcp-proxy-upload LOCAL_MCP_PROXY_CONFIG=.github-issue-agent/corp-mcp-proxy.json'
+		'  make fly-mcp-proxy-upload LOCAL_MCP_PROXY_CONFIG=.maestro/corp-mcp-proxy.json'
 
 .PHONY: mcp-proxy-config-init
 mcp-proxy-config-init:
@@ -63,5 +63,5 @@ fly-mcp-proxy-deploy: fly-mcp-proxy-upload
 
 .PHONY: fly-mcp-proxy-download
 fly-mcp-proxy-download:
-	@mkdir -p .github-issue-agent/backups
-	fly ssh sftp get "$(REMOTE_MCP_PROXY_CONFIG)" ".github-issue-agent/backups/mcp-proxy.$$(date +%Y%m%d%H%M%S).json" --app "$(FLY_APP)" --config "$(FLY_CONFIG)"
+	@mkdir -p .maestro/backups
+	fly ssh sftp get "$(REMOTE_MCP_PROXY_CONFIG)" ".maestro/backups/mcp-proxy.$$(date +%Y%m%d%H%M%S).json" --app "$(FLY_APP)" --config "$(FLY_CONFIG)"

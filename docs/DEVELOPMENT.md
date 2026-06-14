@@ -1,6 +1,6 @@
 # Local Development
 
-ローカルで `github-issue-agent` を開発するための手順と、Claude Managed Agents
+ローカルで `maestro` を開発するための手順と、Claude Managed Agents
 が手元のマシン上の MCP server に到達できるようにするための **dev tunnel** の
 仕組みをまとめる。
 

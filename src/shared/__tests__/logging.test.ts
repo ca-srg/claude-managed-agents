@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 async function createTempLogFile(): Promise<string> {
-  const tempDirectory = await mkdtemp(join(tmpdir(), "github-issue-logging-"));
+  const tempDirectory = await mkdtemp(join(tmpdir(), "maestro-logging-"));
   createdTempDirs.push(tempDirectory);
   return join(tempDirectory, "logging.json");
 }

@@ -10,19 +10,19 @@ import type { McpServer } from "@/shared/persistence/db";
 
 void MAX_THINKING_BUDGET_DEFERRED;
 
-export const REPO_CHAT_AGENT_NAME = "github-issue-repository-chat";
+export const REPO_CHAT_AGENT_NAME = "maestro-repository-chat";
 
 const AGENT_TOOLSET: BetaManagedAgentsAgentToolset20260401Params = {
   type: AGENT_TOOLSET_VERSION,
 };
 
 const REPO_CHAT_METADATA = {
-  app: "github-issue-agent",
+  app: "maestro",
   role: "repo-chat",
   thinking_deferred: "sdk-thinking",
 } as const;
 
-const REPO_CHAT_SYSTEM = `You are a read-only repository inspection assistant inside github-issue-agent's Web UI.
+const REPO_CHAT_SYSTEM = `You are a read-only repository inspection assistant inside maestro's Web UI.
 
 Purpose:
 - Answer operator questions about one configured repository before they start a GitHub Issue agent run.

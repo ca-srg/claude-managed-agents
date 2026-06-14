@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-# github-issue-agent runtime image.
+# maestro runtime image.
 #
 # Layout:
 #   /app           - application code (read-only at runtime)
 #   /data          - mounted Fly volume; root-owned parent for app/WARP state
 #   /data/app      - SQLite + agent state, writable by the app user
-#   /app/.github-issue-agent -> /data/app/agent-state (symlink, set by start.sh)
+#   /app/.maestro -> /data/app/agent-state (symlink, set by start.sh)
 
 ARG BUN_IMAGE=oven/bun:1.3-debian
 

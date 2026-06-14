@@ -46,7 +46,7 @@ type MockVaultClientOptions = {
 };
 
 async function createTempLogFile(): Promise<string> {
-  const directoryPath = await mkdtemp(join(tmpdir(), "github-issue-vault-"));
+  const directoryPath = await mkdtemp(join(tmpdir(), "maestro-vault-"));
   createdTempDirectories.push(directoryPath);
   return join(directoryPath, "vault.log");
 }
@@ -66,7 +66,7 @@ function createVaultRecord(vaultId: string): BetaManagedAgentsVault {
     id: vaultId,
     archived_at: null,
     created_at: ISO_TIMESTAMP,
-    display_name: "github-issue-agent auto",
+    display_name: "maestro auto",
     metadata: {},
     type: "vault",
     updated_at: ISO_TIMESTAMP,
@@ -92,7 +92,7 @@ function createCredentialRecord(
             type: "static_bearer",
           },
     created_at: ISO_TIMESTAMP,
-    display_name: "github-issue-agent auto",
+    display_name: "maestro auto",
     metadata: {},
     type: "vault_credential",
     updated_at: ISO_TIMESTAMP,
@@ -217,7 +217,7 @@ describe("vault helpers", () => {
 
     expect(mockVaultClient.createVaultInvocations).toEqual([
       {
-        display_name: "github-issue-agent auto",
+        display_name: "maestro auto",
       },
     ]);
     expect(mockVaultClient.retrieveVaultInvocations).toEqual([]);
@@ -259,7 +259,7 @@ describe("vault helpers", () => {
             token: SAMPLE_MCP_TOKEN,
             type: "static_bearer",
           },
-          display_name: "github-issue-agent auto (github)",
+          display_name: "maestro auto (github)",
         },
         vaultId: "vlt_auto",
       },
@@ -315,7 +315,7 @@ describe("vault helpers", () => {
             token: SAMPLE_MCP_TOKEN,
             type: "static_bearer",
           },
-          display_name: "github-issue-agent auto (github)",
+          display_name: "maestro auto (github)",
         },
         vaultId: "vlt_multi",
       },
@@ -326,7 +326,7 @@ describe("vault helpers", () => {
             token: "lin_1234567890abcdefghij1234567890abcdef",
             type: "static_bearer",
           },
-          display_name: "github-issue-agent auto (linear)",
+          display_name: "maestro auto (linear)",
         },
         vaultId: "vlt_multi",
       },
@@ -514,7 +514,7 @@ describe("vault helpers", () => {
             token: SAMPLE_MCP_TOKEN,
             type: "static_bearer",
           },
-          display_name: "github-issue-agent auto (github)",
+          display_name: "maestro auto (github)",
         },
         vaultId: "vlt_oauth",
       },
@@ -616,7 +616,7 @@ describe("vault helpers", () => {
             token: "jira_1234567890abcdefghij1234567890abcdef",
             type: "static_bearer",
           },
-          display_name: "github-issue-agent auto (jira)",
+          display_name: "maestro auto (jira)",
         },
         vaultId: "vlt_mixed",
       },

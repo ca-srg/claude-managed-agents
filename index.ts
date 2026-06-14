@@ -88,7 +88,7 @@ type ServerEnv = {
   port: number;
 };
 
-const DEFAULT_DB_PATH = ".github-issue-agent/dashboard.db";
+const DEFAULT_DB_PATH = ".maestro/dashboard.db";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 

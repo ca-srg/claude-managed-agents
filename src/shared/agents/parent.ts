@@ -20,7 +20,7 @@ import type { CustomToolDefinition } from "@/shared/tool-schema-core";
 void MAX_THINKING_BUDGET_DEFERRED;
 
 const PARENT_METADATA = {
-  app: "github-issue-agent",
+  app: "maestro",
   role: "parent",
   thinking_deferred: "sdk-thinking",
 } as const;

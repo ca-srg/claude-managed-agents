@@ -1218,7 +1218,7 @@ describe("createRunApiRoutes", () => {
     const { app, emittedEvents, enqueuedInputs } = createFakeHarness();
 
     const response = await postJson(app, {
-      configPath: "github-issue-agent.config.ts",
+      configPath: "maestro.config.ts",
       dryRun: true,
       issue: 42,
       repo: "acme/widgets",
@@ -1231,7 +1231,7 @@ describe("createRunApiRoutes", () => {
     expect(payload).toEqual({ position: 1, runId: "run-1", status: "queued" });
     expect(enqueuedInputs).toEqual([
       {
-        configPath: "github-issue-agent.config.ts",
+        configPath: "maestro.config.ts",
         dryRun: true,
         issue: 42,
         origin: "github_issue",

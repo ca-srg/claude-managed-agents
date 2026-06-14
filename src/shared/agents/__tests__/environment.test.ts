@@ -261,8 +261,8 @@ describe("environment", () => {
   test("buildRepoEnvironmentName returns a deterministic valid name", () => {
     const environmentName = buildRepoEnvironmentName("octocat/Hello-World");
 
-    expect(environmentName).toBe("gh-iea-octocat--Hello-World");
-    expect(environmentName.startsWith("gh-iea-")).toBe(true);
+    expect(environmentName).toBe("maestro-octocat--Hello-World");
+    expect(environmentName.startsWith("maestro-")).toBe(true);
     expect(environmentName).not.toContain("/");
     expect(environmentName).not.toContain(" ");
     expect(environmentName.length <= 120).toBe(true);
@@ -277,8 +277,8 @@ describe("environment", () => {
 
     expect(firstName.length).toBe(120);
     expect(secondName.length).toBe(120);
-    expect(firstName).toMatch(/^gh-iea-owner--/);
-    expect(secondName).toMatch(/^gh-iea-owner--/);
+    expect(firstName).toMatch(/^maestro-owner--/);
+    expect(secondName).toMatch(/^maestro-owner--/);
     expect(firstName).toMatch(/-[a-f0-9]{8}$/);
     expect(secondName).toMatch(/-[a-f0-9]{8}$/);
     expect(firstName).not.toBe(secondName);
@@ -334,7 +334,7 @@ describe("environment", () => {
       repo: "a/b",
     });
 
-    expect(definition.name).toBe("gh-iea-a--b");
+    expect(definition.name).toBe("maestro-a--b");
     expect(definition.config).toEqual({
       type: "cloud",
       networking: { type: "unrestricted" },

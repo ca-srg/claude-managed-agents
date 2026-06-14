@@ -1,11 +1,11 @@
 # Deploying to Fly.io
 
-This guide walks through hosting `github-issue-agent` on Fly.io with
+This guide walks through hosting `maestro` on Fly.io with
 Cloudflare Tunnel as the only public ingress.
 
 > **App name caveat.** Fly.io blocks any app name containing the substring
 > `github` (anti-phishing filter). The bundled `fly.toml` uses
-> `claude-managed-agents`. Pick whatever you like, just avoid `github`.
+> `maestro`. Pick whatever you like, just avoid `github`.
 
 > **Ingress note.** The committed `fly.toml` does **not** define
 > `[http_service]` or `[[services]]`. The bun app (`:3000`), the mcp-proxy
@@ -57,10 +57,10 @@ The repo ships these supporting files:
 
 ```bash
 # from repo root
-fly apps create gh-issue-agent --org personal
+fly apps create maestro --org personal
 
 # 1 GB volume in the same region
-fly volumes create data --size 1 --region nrt --app gh-issue-agent
+fly volumes create data --size 1 --region nrt --app maestro
 ```
 
 If you prefer `fly launch`, be aware that it rewrites `fly.toml` and will
@@ -75,7 +75,7 @@ dashboard, not in the repo.
 
 1. Open <https://one.dash.cloudflare.com/> → **Networks** → **Tunnels**.
 2. **Create a tunnel** → choose **Cloudflared** → give it a name
-   (e.g. `gh-issue-agent`) → **Save tunnel**.
+   (e.g. `maestro`) → **Save tunnel**.
 3. On the connector page, copy the **token** shown next to the
    `cloudflared tunnel run --token <TOKEN>` snippet. You do **not** need
    to install cloudflared anywhere — the token is all this Fly Machine
@@ -184,7 +184,7 @@ Cloudflare setup:
 3. Store the token values as Fly secrets; do not commit them:
 
    ```bash
-   fly secrets set --app gh-issue-agent \
+   fly secrets set --app maestro \
      CF_WARP_ORGANIZATION='your-team-name' \
      CF_WARP_ACCESS_CLIENT_ID='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.access' \
      CF_WARP_ACCESS_CLIENT_SECRET='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
@@ -208,7 +208,7 @@ WARP can re-enroll after restarts or token rotation.
 Optional tuning:
 
 ```bash
-fly secrets set --app gh-issue-agent \
+fly secrets set --app maestro \
   CF_WARP_SERVICE_MODE='warp' \
   CF_WARP_CONNECT_TIMEOUT_SECONDS='90'
 ```
@@ -231,7 +231,7 @@ stdio MCP servers. Add the WARP secrets from step 1.6 only if this Machine
 should join Zero Trust as a managed device.
 
 ```bash
-fly secrets set --app gh-issue-agent \
+fly secrets set --app maestro \
   ANTHROPIC_API_KEY='sk-ant-...' \
   GITHUB_APP_ID='123456' \
   GITHUB_APP_PRIVATE_KEY="$(cat path/to/private-key.pem)" \
@@ -247,7 +247,7 @@ Alternatively, mount the PEM at runtime (for example on a Fly volume or another
 runtime-only mount) and point the app at that file:
 
 ```bash
-fly secrets set --app gh-issue-agent \
+fly secrets set --app maestro \
   GITHUB_APP_ID='123456' \
   GITHUB_APP_PRIVATE_KEY_PATH='/data/secrets/github-app.pem'
 ```
@@ -278,7 +278,7 @@ concurrent runs across repositories.
 ## 3. Deploy
 
 ```bash
-fly deploy --app gh-issue-agent
+fly deploy --app maestro
 ```
 
 Watch the logs for:
@@ -291,7 +291,7 @@ Watch the logs for:
   `Registered tunnel connection` line from cloudflared itself
 
 ```bash
-fly logs --app gh-issue-agent
+fly logs --app maestro
 ```
 
 Then hit `https://app.example.com/` from a browser — it should render
@@ -301,19 +301,19 @@ the dashboard.
 
 ```bash
 # Tail logs
-fly logs --app gh-issue-agent
+fly logs --app maestro
 
 # SSH into the running machine
-fly ssh console --app gh-issue-agent
+fly ssh console --app maestro
 
 # Check disk usage (volume is mounted at /data)
-fly ssh console --app gh-issue-agent -C 'df -h /data'
+fly ssh console --app maestro -C 'df -h /data'
 
 # Backup the SQLite db locally
-fly ssh sftp get /data/app/dashboard.db ./dashboard.db.bak --app gh-issue-agent
+fly ssh sftp get /data/app/dashboard.db ./dashboard.db.bak --app maestro
 
 # Re-deploy after code changes
-fly deploy --app gh-issue-agent
+fly deploy --app maestro
 ```
 
 ## Troubleshooting
@@ -337,25 +337,25 @@ fly deploy --app gh-issue-agent
     it contains the service token secret.
 
 - **Cloudflare hostname returns `Error 1033` / `1016`**
-  → The tunnel has no healthy connector. Tail `fly logs --app gh-issue-agent`
+  → The tunnel has no healthy connector. Tail `fly logs --app maestro`
     and look for cloudflared output. Common causes: invalid token (revoke
     and re-issue from the dashboard), Machine stopped (`fly machine list`),
     or the public hostname `Service` points at the wrong port.
 
 - **Cloudflare hostname returns `502 Bad Gateway`**
   → The tunnel connected, but the target port isn't responding. Inside
-    the Machine: `fly ssh console --app gh-issue-agent -C 'curl -sf http://127.0.0.1:3000/ -o /dev/null && echo OK'`.
+    the Machine: `fly ssh console --app maestro -C 'curl -sf http://127.0.0.1:3000/ -o /dev/null && echo OK'`.
     If bun is down, check `pgrep -fa bun` and `fly logs` for crash traces.
 
 - **App is reachable on `<app>.fly.dev` after deploy**
   → That should be impossible with the shipped `fly.toml` (no
     `[http_service]` / `[[services]]`). Inspect with
-    `fly status --app gh-issue-agent` — if any services are listed,
+    `fly status --app maestro` — if any services are listed,
     `fly launch` or a stale config injected them. Re-apply the bundled
     `fly.toml` and `fly deploy` again.
 
 - **Run lock complaint after a crash**
-  → `fly ssh console --app gh-issue-agent -C 'rm /data/app/agent-state/run.lock.lock'`.
+  → `fly ssh console --app maestro -C 'rm /data/app/agent-state/run.lock.lock'`.
 
 - **`HOST` should be `127.0.0.1`**
   → With Tunnel-only ingress the app intentionally binds to `127.0.0.1`
@@ -366,10 +366,10 @@ fly deploy --app gh-issue-agent
 - **mcp-proxy returns `404` on `/servers/<name>/mcp`**
   → The server name doesn't match a key in `mcp-proxy.json`. URL-encode
     spaces (`%20`). Verify the running config inside the machine:
-    `fly ssh console --app gh-issue-agent -C 'cat /data/mcp-proxy.json'`.
+    `fly ssh console --app maestro -C 'cat /data/mcp-proxy.json'`.
 
 - **mcp-proxy fails to spawn an `npx`-based server**
-  → Check logs with `fly logs --app gh-issue-agent | grep mcp-proxy`.
+  → Check logs with `fly logs --app maestro | grep mcp-proxy`.
     The first invocation downloads the package into `/home/bun/.npm`,
     which can take 10–30s; subsequent calls are cached.
 

@@ -48,7 +48,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## 実行
 
 ```bash
-cd github-issue
+cd maestro
 E2E=1 bun run scripts/e2e-real.ts 2>&1 | tee .sisyphus/evidence/task-25-e2e.log
 ```
 

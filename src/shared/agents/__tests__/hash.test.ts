@@ -5,7 +5,7 @@ import { hashDefinition } from "../hash";
 
 function createAgentDefinition(overrides: Partial<AgentCreateParams> = {}): AgentCreateParams {
   return {
-    name: "github-issue-orchestrator",
+    name: "maestro-orchestrator",
     description: "Coordinates GitHub issue decomposition and delivery.",
     model: "claude-opus-4-8",
     system: "Parent prompt",
@@ -36,7 +36,7 @@ function createAgentDefinition(overrides: Partial<AgentCreateParams> = {}): Agen
       },
     ],
     metadata: {
-      app: "github-issue-agent",
+      app: "maestro",
       role: "parent",
       thinking_deferred: "sdk-v0.91",
     },
@@ -57,7 +57,7 @@ describe("hashDefinition", () => {
       metadata: {
         thinking_deferred: "sdk-v0.91",
         role: "parent",
-        app: "github-issue-agent",
+        app: "maestro",
       },
       tools: [
         {
@@ -88,7 +88,7 @@ describe("hashDefinition", () => {
       system: "Parent prompt",
       model: "claude-opus-4-8",
       description: "Coordinates GitHub issue decomposition and delivery.",
-      name: "github-issue-orchestrator",
+      name: "maestro-orchestrator",
     };
 
     expect(hashDefinition(canonicalDefinition)).toBe(hashDefinition(reorderedDefinition));
@@ -140,7 +140,7 @@ describe("hashDefinition", () => {
     const secondDigest = hashDefinition(
       createAgentDefinition({
         metadata: {
-          app: "github-issue-agent",
+          app: "maestro",
           role: "child",
           thinking_deferred: "sdk-v0.91",
         },

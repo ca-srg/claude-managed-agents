@@ -1,4 +1,4 @@
-# AGENTS.md — github-issue-agent
+# AGENTS.md — maestro
 
 ## 作業ルール
 
@@ -40,7 +40,7 @@
 
 ## Managed Agents / MCP
 
-- Parent は `github-issue-orchestrator`、child は `github-issue-implementer`。Managed Agents multi-agent coordinator topology を使う。
+- Parent は `maestro-orchestrator`、child は `maestro-implementer`。Managed Agents multi-agent coordinator topology を使う。
 - `src/shared/agents/registry.ts` は child を先に create/update し、parent の `multiagent.coordinator` roster に child `{id, version}` を埋め込む。registry state は DB の `agent_registry_state`。
 - `spawn_child_task` custom tool は廃止済み。parent custom tools は `create_final_pr` と `create_sub_issue` だけ (`src/parent-tools.ts`)。
 - Delegation 観測イベント名は `session.thread_created`, `agent.thread_message_sent/received`, `session.thread_status_*`。
@@ -50,12 +50,12 @@
 
 ## DB / 永続化
 
-- SQLite default は `.github-issue-agent/dashboard.db`。schema source of truth は `src/shared/persistence/db.ts` の `SCHEMA_SQL`。
-- `.github-issue-agent/` は gitignore 済みの runtime state (DB, lock, state, run JSON)。stale lock だけなら `.github-issue-agent/run.lock.lock` を疑う。
+- SQLite default は `.maestro/dashboard.db`。schema source of truth は `src/shared/persistence/db.ts` の `SCHEMA_SQL`。
+- `.maestro/` は gitignore 済みの runtime state (DB, lock, state, run JSON)。stale lock だけなら `.maestro/run.lock.lock` を疑う。
 - WebUI 管理データは env/config ではなく DB が source of truth: prompts, polled repositories, MCP servers, repo prompts, repo environments, repo chat, agent registry state。
 - GitHub trigger の監視 repo は `/repositories` で `polled_repositories` に追加する。旧 `GITHUB_TRIGGER_REPOS` env は使わない。poller は常時起動し、空なら no-op。
 - Prompt keys は `parent.system`, `child.system`, `parent.runtime`, `child.runtime`。UI で編集できるのは `*.system`、runtime template は read-only。
-- Config は `github-issue-agent.config.ts/json` または `CONFIG_PATH`。schema は strict。env override は `PARENT_MODEL`, `CHILD_MODEL`, `MAX_SUB_ISSUES`, `MAX_RUN_MINUTES`, `VAULT_ID` のみ。
+- Config は `maestro.config.ts/json` または `CONFIG_PATH`。schema は strict。env override は `PARENT_MODEL`, `CHILD_MODEL`, `MAX_SUB_ISSUES`, `MAX_RUN_MINUTES`, `VAULT_ID` のみ。
 
 ## WebUI / i18n
 
@@ -75,5 +75,5 @@
 - GitHub App mode で複数 repo を扱う時は shared `VAULT_ID` を避ける。MCP credential は URL 単位なので repo-scoped installation token が上書きされ得る。
 - `ENABLE_DEV_TUNNEL=true` は Python `mcp-proxy` + Bun `mcp-gateway` subprocess + ngrok を起動し、`mcp_servers` を tunnel URL に upsert する。`NGROK_AUTHTOKEN` と固定 `MCP_GATEWAY_TOKEN` が必須。詳細は `docs/DEVELOPMENT.md`。
 - Fly runtime は `scripts/start.sh` が app, mcp-proxy, MCP gateway, cloudflared を起動する。`CLOUDFLARE_TUNNEL_TOKEN` 未設定では start.sh が拒否する。
-- Fly の DB default は `/data/app/dashboard.db`。start.sh は `/app/.github-issue-agent` を volume 上の agent-state へ symlink する。
+- Fly の DB default は `/data/app/dashboard.db`。start.sh は `/app/.maestro` を volume 上の agent-state へ symlink する。
 - `docs/mcp.md` には SDK `0.90.0` / `v0.91` 前提の古い記述が残る。SDK 制約は `src/shared/constants.ts` と `src/shared/agents/*` を優先する。

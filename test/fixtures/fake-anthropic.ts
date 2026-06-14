@@ -68,8 +68,8 @@ type CreateOverride = {
 };
 
 const DEFAULT_AGENT_NAMES = {
-  parent: "github-issue-orchestrator",
-  child: "github-issue-implementer",
+  parent: "maestro-orchestrator",
+  child: "maestro-implementer",
 } as const;
 
 function roleFromName(agentName: string): "parent" | "child" {
